@@ -1,7 +1,7 @@
 # ZooTogether — Zoo Tycoon (2001) co-op: plan and hand-off
 
 Status: **first vertical slice (shared budget) works in a two-copy lab** (see "Lab"), version
-0.1.0-dev, local commits only (GitHub HOLD, no repo yet). Built on [openzt](https://github.com/openzt1/openzt) (MIT, (c) the openzt authors), a Rust DLL
+0.1.0-dev. Repo: https://github.com/multiplayereverything/zoo-tycoon-coop (no release yet). Built on [openzt](https://github.com/openzt1/openzt) (by the openzt authors; LICENSE file GPL-3.0, Cargo metadata MIT/Apache-2.0, so this repo is GPL-3.0), a Rust DLL
 that the game loads as `res-openzt.dll` and that detours game functions at fixed addresses.
 
 ## Layout
@@ -14,6 +14,7 @@ Zoo Tycoon\ZooTogether\          this repo (the game never scans it)
   scripts\setup-lab.ps1          makes private\lab-host + private\lab-client (hardlinked copies)
   scripts\zt_launch.py           starts a copy suspended, lifts the one-instance check, parks it off-screen
   scripts\lab_money.py           the two-copy money lab (+ mutants)
+  scripts\get-openzt.ps1         clones openzt at df01b96 and applies the patch into vendor\openzt
   patches\openzt-zoo-together.patch   our changes to openzt, as a patch on upstream df01b96
   vendor\openzt\                 openzt checkout, branch zoo-together (its own git repo, ignored here)
   private\                       lab copies and results (ignored)
