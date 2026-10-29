@@ -1,0 +1,828 @@
+From beed50b7f5098f3cbb80e31447184686bcd50973 Mon Sep 17 00:00:00 2001
+From: multiplayereverything <multiplayereverythingofficial@gmail.com>
+Date: Fri, 30 Oct 2026 01:22:29 +0200
+Subject: [PATCH] ZooTogether: host-authoritative shared budget over TCP (coop
+ feature)
+
+- coop.rs: session, framed wire protocol, client/host spend ledgers, Lua commands
+  (coop_host/join/stop/status/cash, lab helpers coop_test_spend/coop_load_zoo), unit tests
+- ztgamemgr: vanilla subtractCash detour reports client spends; set_cash_and_refresh
+- command_console: run coop tick each frame; per-request reply channel and FIFO queue
+  (handlers no longer busy-spin or steal each other's replies)
+- logging: OPENZT_NO_CONSOLE=1 skips AllocConsole
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ openzt-dll/Cargo.toml         |   1 +
+ openzt/Cargo.toml             |   1 +
+ openzt/src/command_console.rs |  44 ++-
+ openzt/src/coop.rs            | 606 ++++++++++++++++++++++++++++++++++
+ openzt/src/lib.rs             |   5 +
+ openzt/src/logging.rs         |   4 +
+ openzt/src/ztgamemgr.rs       |  10 +
+ 7 files changed, 653 insertions(+), 18 deletions(-)
+ create mode 100644 openzt/src/coop.rs
+
+diff --git a/openzt-dll/Cargo.toml b/openzt-dll/Cargo.toml
+index 0f7b719..d149545 100644
+--- a/openzt-dll/Cargo.toml
++++ b/openzt-dll/Cargo.toml
+@@ -20,6 +20,7 @@ crate-type = ["cdylib"]
+ 
+ [features]
+ command-console = ["openzt/command-console"]
++coop = ["openzt/coop"]
+ integration-tests = ["openzt/integration-tests"]
+ release = ["openzt/release"]
+ vanilla-research-config = ["openzt/vanilla-research-config"]
+diff --git a/openzt/Cargo.toml b/openzt/Cargo.toml
+index 8a392fc..356ee06 100644
+--- a/openzt/Cargo.toml
++++ b/openzt/Cargo.toml
+@@ -59,5 +59,6 @@ vanilla-research-save = []
+ patch-integration-tests = []
+ integration-tests = []
+ command-console = []
++coop = ["command-console"]
+ tui = ["dep:ratatui", "dep:crossterm"]
+ proptest = ["dep:proptest"]
+diff --git a/openzt/src/command_console.rs b/openzt/src/command_console.rs
+index 7e19a09..d29174c 100644
+--- a/openzt/src/command_console.rs
++++ b/openzt/src/command_console.rs
+@@ -2,8 +2,9 @@ use std::{
+     error::Error,
+     fmt,
+     io::{Read, Write},
++    collections::VecDeque,
+     net::{TcpListener, TcpStream},
+-    sync::Mutex,
++    sync::{Mutex, mpsc},
+     thread,
+ };
+ 
+@@ -80,6 +81,8 @@ pub mod zoo_console {
+     #[detour(UPDATE_SIM)]
+     unsafe extern "thiscall" fn zoo_zt_app_update_game(_this_ptr: *const u32, param_2: u32) {
+         call_next_command();
++        #[cfg(feature = "coop")]
++        crate::coop::tick();
+         unsafe { UPDATE_SIM_DETOUR.call(_this_ptr, param_2) }
+     }
+ 
+@@ -106,12 +109,13 @@ static COMMAND_THREAD: LazyLock<Mutex<std::thread::JoinHandle<()>>> = LazyLock::
+ 
+ static COMMAND_RESULTS: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::<String>::new()));
+ 
+-static COMMAND_QUEUE: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::<String>::new()));
++type QueuedCommand = (String, Option<mpsc::Sender<String>>);
++static COMMAND_QUEUE: LazyLock<Mutex<VecDeque<QueuedCommand>>> = LazyLock::new(|| Mutex::new(VecDeque::new()));
+ 
+ /// Executes the next Lua code from the command queue on the game thread
+ pub fn call_next_command() {
+     let _unused = COMMAND_THREAD.lock().unwrap();
+-    let Some(lua_code) = get_from_command_queue() else {
++    let Some((lua_code, reply)) = get_from_command_queue() else {
+         return;
+     };
+ 
+@@ -125,8 +129,14 @@ pub fn call_next_command() {
+     #[cfg(feature = "tui")]
+     tui_console::add_command_output(result.clone());
+ 
+-    let mut result_mutex = COMMAND_RESULTS.lock().unwrap();
+-    result_mutex.push(result);
++    // A socket client waits on its own channel; only commands without one (the TUI) land in the
++    // shared results list.
++    match reply {
++        Some(tx) => {
++            let _ = tx.send(result);
++        }
++        None => COMMAND_RESULTS.lock().unwrap().push(result),
++    }
+ }
+ 
+ pub fn get_next_result() -> Option<String> {
+@@ -136,13 +146,11 @@ pub fn get_next_result() -> Option<String> {
+ 
+ pub fn add_to_command_queue(command: String) {
+     info!("Adding Lua code to queue: {}", command);
+-    let mut data_mutex = COMMAND_QUEUE.lock().unwrap();
+-    data_mutex.push(command);
++    COMMAND_QUEUE.lock().unwrap().push_back((command, None));
+ }
+ 
+-pub fn get_from_command_queue() -> Option<String> {
+-    let mut data_mutex = COMMAND_QUEUE.lock().unwrap();
+-    data_mutex.pop()
++fn get_from_command_queue() -> Option<(String, Option<mpsc::Sender<String>>)> {
++    COMMAND_QUEUE.lock().unwrap().pop_front()
+ }
+ 
+ fn handle_client(mut stream: TcpStream) {
+@@ -158,16 +166,16 @@ fn handle_client(mut stream: TcpStream) {
+ 
+                 // Received Lua code to execute
+                 let received_string = String::from_utf8_lossy(&buffer[0..size]);
+-                add_to_command_queue(received_string.to_string());
+                 info!("Received Lua code: {}", received_string);
+ 
+-                loop {
+-                    if let Some(result) = get_next_result() {
+-                        if let Err(err) = stream.write_all(result.as_bytes()) {
+-                            info!("Error sending data: {}", err);
+-                        }
+-                        break;
+-                    }
++                // Each request gets its own reply channel: with the old shared results list, a
++                // handler whose client had given up busy-spun forever and stole later replies.
++                let (tx, rx) = mpsc::channel();
++                COMMAND_QUEUE.lock().unwrap().push_back((received_string.to_string(), Some(tx)));
++                let Ok(result) = rx.recv() else { break };
++                if let Err(err) = stream.write_all(result.as_bytes()) {
++                    info!("Error sending data: {}", err);
++                    break;
+                 }
+             }
+             Err(err) => {
+diff --git a/openzt/src/coop.rs b/openzt/src/coop.rs
+new file mode 100644
+index 0000000..b62edd6
+--- /dev/null
++++ b/openzt/src/coop.rs
+@@ -0,0 +1,606 @@
++//! ZooTogether co-op: host-authoritative shared budget (first vertical slice).
++//!
++//! The host's `ZTGameMgr::cash` is the only real budget. The host streams it to the client
++//! (`CashState`, 5 Hz). Money the client's own vanilla code spends through `ZTGameMgr::subtractCash`
++//! (buying objects, animals, staff...) is sent to the host as a `Spend` request and applied there; the
++//! client shows `host_cash - spends the host has not acknowledged yet`, so a purchase never flickers
++//! back. Guest income and other sim-side money on the client is overwritten by the next snapshot.
++//!
++//! Transport is plain TCP (Zoo Tycoon 2001 has no Steamworks): host listens, client connects by IP.
++//! Frames are `u32 len (LE) | u8 type | payload`; `len` covers type + payload. A writer thread sends a
++//! keepalive every second, so a stalled game thread never looks like a dead link.
++//!
++//! All game memory is touched only from [`tick`] and [`on_vanilla_subtract_cash`], both of which run on
++//! the game thread. Network threads only move bytes between sockets and channels.
++
++use std::{
++    io::{self, Read, Write},
++    net::{Shutdown, TcpListener, TcpStream},
++    sync::{
++        Mutex,
++        atomic::{AtomicBool, Ordering},
++        mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError},
++    },
++    thread,
++    time::{Duration, Instant},
++};
++
++use tracing::{info, warn};
++
++use crate::{globals::globals, lua_fn};
++
++pub const PROTOCOL_VERSION: u16 = 1;
++pub const DEFAULT_PORT: u16 = 27150;
++const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(200);
++const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
++const READ_TIMEOUT: Duration = Duration::from_secs(30);
++const MAX_FRAME: u32 = 64 * 1024;
++const OUTBOUND_QUEUE: usize = 256;
++
++// ---------------------------------------------------------------------------------------------
++// Wire format
++// ---------------------------------------------------------------------------------------------
++
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub enum Msg {
++    Hello { protocol: u16, role: u8 },
++    CashState { seq: u32, cash: f32, acked_spend: u32 },
++    Spend { seq: u32, amount: f32 },
++    Keepalive,
++}
++
++const T_HELLO: u8 = 1;
++const T_CASH: u8 = 2;
++const T_SPEND: u8 = 3;
++const T_KEEPALIVE: u8 = 4;
++
++pub const ROLE_HOST: u8 = 1;
++pub const ROLE_CLIENT: u8 = 2;
++
++impl Msg {
++    pub fn encode(&self) -> Vec<u8> {
++        let mut body = Vec::with_capacity(16);
++        match *self {
++            Msg::Hello { protocol, role } => {
++                body.push(T_HELLO);
++                body.extend_from_slice(&protocol.to_le_bytes());
++                body.push(role);
++            }
++            Msg::CashState { seq, cash, acked_spend } => {
++                body.push(T_CASH);
++                body.extend_from_slice(&seq.to_le_bytes());
++                body.extend_from_slice(&cash.to_le_bytes());
++                body.extend_from_slice(&acked_spend.to_le_bytes());
++            }
++            Msg::Spend { seq, amount } => {
++                body.push(T_SPEND);
++                body.extend_from_slice(&seq.to_le_bytes());
++                body.extend_from_slice(&amount.to_le_bytes());
++            }
++            Msg::Keepalive => body.push(T_KEEPALIVE),
++        }
++        let mut out = Vec::with_capacity(4 + body.len());
++        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
++        out.extend_from_slice(&body);
++        out
++    }
++
++    /// Decodes one frame body (type byte + payload, without the length prefix).
++    pub fn decode(body: &[u8]) -> Option<Msg> {
++        let (&t, p) = body.split_first()?;
++        let u16_at = |i: usize| p.get(i..i + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
++        let u32_at = |i: usize| p.get(i..i + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
++        let f32_at = |i: usize| u32_at(i).map(f32::from_bits);
++        match t {
++            T_HELLO if p.len() == 3 => Some(Msg::Hello { protocol: u16_at(0)?, role: p[2] }),
++            T_CASH if p.len() == 12 => Some(Msg::CashState { seq: u32_at(0)?, cash: f32_at(4)?, acked_spend: u32_at(8)? }),
++            T_SPEND if p.len() == 8 => Some(Msg::Spend { seq: u32_at(0)?, amount: f32_at(4)? }),
++            T_KEEPALIVE if p.is_empty() => Some(Msg::Keepalive),
++            _ => None,
++        }
++    }
++}
++
++fn read_frame(stream: &mut TcpStream) -> io::Result<Msg> {
++    let mut len = [0u8; 4];
++    stream.read_exact(&mut len)?;
++    let len = u32::from_le_bytes(len);
++    if len == 0 || len > MAX_FRAME {
++        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("bad frame length {len}")));
++    }
++    let mut body = vec![0u8; len as usize];
++    stream.read_exact(&mut body)?;
++    Msg::decode(&body).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "unknown or malformed frame"))
++}
++
++// ---------------------------------------------------------------------------------------------
++// Pure session logic (no game memory, unit-tested)
++// ---------------------------------------------------------------------------------------------
++
++/// Client-side bookkeeping for spends the host has not acknowledged yet.
++#[derive(Debug, Default)]
++pub struct ClientLedger {
++    next_seq: u32,
++    pending: Vec<(u32, f32)>,
++}
++
++impl ClientLedger {
++    pub fn record_spend(&mut self, amount: f32) -> u32 {
++        self.next_seq += 1;
++        self.pending.push((self.next_seq, amount));
++        self.next_seq
++    }
++
++    /// The budget to show locally for a host snapshot.
++    pub fn apply_snapshot(&mut self, host_cash: f32, acked_spend: u32) -> f32 {
++        self.pending.retain(|&(seq, _)| seq > acked_spend);
++        host_cash - self.pending.iter().map(|&(_, a)| a).sum::<f32>()
++    }
++
++    pub fn pending(&self) -> usize {
++        self.pending.len()
++    }
++}
++
++/// Host-side bookkeeping: applies each client spend exactly once, in order.
++#[derive(Debug, Default)]
++pub struct HostLedger {
++    pub last_applied: u32,
++}
++
++impl HostLedger {
++    /// Returns the amount to subtract, or `None` for a duplicate/old spend.
++    pub fn accept(&mut self, seq: u32, amount: f32) -> Option<f32> {
++        if seq <= self.last_applied || !amount.is_finite() {
++            return None;
++        }
++        self.last_applied = seq;
++        Some(amount)
++    }
++}
++
++// ---------------------------------------------------------------------------------------------
++// Connection threads
++// ---------------------------------------------------------------------------------------------
++
++enum NetEvent {
++    Connected(String),
++    Msg(Msg),
++    Disconnected(String),
++}
++
++struct Link {
++    out: SyncSender<Msg>,
++    stream: TcpStream,
++}
++
++fn spawn_link(stream: TcpStream, events: Sender<NetEvent>, my_role: u8) -> io::Result<Link> {
++    stream.set_nodelay(true)?;
++    stream.set_read_timeout(Some(READ_TIMEOUT))?;
++    let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
++    let (out_tx, out_rx) = mpsc::sync_channel::<Msg>(OUTBOUND_QUEUE);
++
++    let mut writer = stream.try_clone()?;
++    thread::spawn(move || writer_loop(&mut writer, out_rx));
++
++    let mut reader = stream.try_clone()?;
++    let ev = events.clone();
++    let peer_r = peer.clone();
++    thread::spawn(move || {
++        let reason = loop {
++            match read_frame(&mut reader) {
++                Ok(Msg::Keepalive) => {}
++                Ok(m) => {
++                    if ev.send(NetEvent::Msg(m)).is_err() {
++                        break "session closed".to_string();
++                    }
++                }
++                Err(e) => break e.to_string(),
++            }
++        };
++        let _ = ev.send(NetEvent::Disconnected(format!("{peer_r}: {reason}")));
++    });
++
++    let _ = out_tx.try_send(Msg::Hello { protocol: PROTOCOL_VERSION, role: my_role });
++    let _ = events.send(NetEvent::Connected(peer));
++    Ok(Link { out: out_tx, stream })
++}
++
++fn writer_loop(stream: &mut TcpStream, rx: Receiver<Msg>) {
++    loop {
++        let msg = match rx.recv_timeout(KEEPALIVE_INTERVAL) {
++            Ok(m) => m,
++            Err(RecvTimeoutError::Timeout) => Msg::Keepalive,
++            Err(RecvTimeoutError::Disconnected) => return,
++        };
++        if stream.write_all(&msg.encode()).is_err() {
++            return;
++        }
++    }
++}
++
++// ---------------------------------------------------------------------------------------------
++// Session state (game thread)
++// ---------------------------------------------------------------------------------------------
++
++#[derive(Debug, Clone, Copy, PartialEq)]
++enum Role {
++    Off,
++    Host,
++    Client,
++}
++
++struct Session {
++    role: Role,
++    events_tx: Sender<NetEvent>,
++    events_rx: Receiver<NetEvent>,
++    link: Option<Link>,
++    peer_ok: bool,
++    last_snapshot: Instant,
++    snapshot_seq: u32,
++    host: HostLedger,
++    client: ClientLedger,
++    stats: Stats,
++}
++
++#[derive(Debug, Default, Clone)]
++struct Stats {
++    snapshots_sent: u32,
++    snapshots_applied: u32,
++    spends_sent: u32,
++    spends_applied: u32,
++    last_host_cash: f32,
++    last_error: String,
++}
++
++impl Session {
++    fn new() -> Self {
++        let (events_tx, events_rx) = mpsc::channel();
++        Session {
++            role: Role::Off,
++            events_tx,
++            events_rx,
++            link: None,
++            peer_ok: false,
++            last_snapshot: Instant::now(),
++            snapshot_seq: 0,
++            host: HostLedger::default(),
++            client: ClientLedger::default(),
++            stats: Stats::default(),
++        }
++    }
++
++    fn send(&mut self, msg: Msg) -> bool {
++        let Some(link) = &self.link else { return false };
++        match link.out.try_send(msg) {
++            Ok(()) => true,
++            // Snapshots are superseded by the next one; dropping under backpressure is fine.
++            Err(TrySendError::Full(_)) => false,
++            Err(TrySendError::Disconnected(_)) => false,
++        }
++    }
++}
++
++static SESSION: Mutex<Option<Session>> = Mutex::new(None);
++static IS_CLIENT: AtomicBool = AtomicBool::new(false);
++
++fn with_session<R>(f: impl FnOnce(&mut Session) -> R) -> R {
++    let mut guard = SESSION.lock().unwrap();
++    f(guard.get_or_insert_with(Session::new))
++}
++
++fn host(port: u16) -> Result<String, String> {
++    let listener = TcpListener::bind(("0.0.0.0", port)).map_err(|e| format!("bind {port}: {e}"))?;
++    let events = with_session(|s| {
++        s.role = Role::Host;
++        s.events_tx.clone()
++    });
++    IS_CLIENT.store(false, Ordering::SeqCst);
++    thread::spawn(move || {
++        for stream in listener.incoming() {
++            match stream {
++                Ok(stream) => {
++                    // First slice: one client. A second connection replaces the first.
++                    match spawn_link(stream, events.clone(), ROLE_HOST) {
++                        Ok(link) => {
++                            let mut guard = SESSION.lock().unwrap();
++                            if let Some(s) = guard.as_mut() {
++                                if let Some(old) = s.link.replace(link) {
++                                    let _ = old.stream.shutdown(Shutdown::Both);
++                                }
++                            }
++                        }
++                        Err(e) => warn!("coop: accept failed: {e}"),
++                    }
++                }
++                Err(e) => warn!("coop: listener error: {e}"),
++            }
++        }
++    });
++    info!("coop: hosting on port {port}");
++    Ok(format!("hosting on port {port}"))
++}
++
++fn join(addr: &str) -> Result<String, String> {
++    let addr = if addr.contains(':') { addr.to_string() } else { format!("{addr}:{DEFAULT_PORT}") };
++    let stream = TcpStream::connect(&addr).map_err(|e| format!("connect {addr}: {e}"))?;
++    let events = with_session(|s| {
++        s.role = Role::Client;
++        s.events_tx.clone()
++    });
++    let link = spawn_link(stream, events, ROLE_CLIENT).map_err(|e| e.to_string())?;
++    with_session(|s| s.link = Some(link));
++    IS_CLIENT.store(true, Ordering::SeqCst);
++    info!("coop: joined {addr}");
++    Ok(format!("joined {addr}"))
++}
++
++fn stop() -> String {
++    let mut guard = SESSION.lock().unwrap();
++    if let Some(s) = guard.as_mut() {
++        if let Some(link) = s.link.take() {
++            let _ = link.stream.shutdown(Shutdown::Both);
++        }
++    }
++    *guard = None;
++    IS_CLIENT.store(false, Ordering::SeqCst);
++    "stopped".to_string()
++}
++
++fn status() -> String {
++    with_session(|s| {
++        let cash = game_cash().map(|c| format!("{c:.2}")).unwrap_or_else(|| "none".into());
++        format!(
++            "role={:?} connected={} cash={} host_cash={:.2} snapshots_sent={} snapshots_applied={} spends_sent={} spends_applied={} pending={} last_error={}",
++            s.role,
++            s.peer_ok,
++            cash,
++            s.stats.last_host_cash,
++            s.stats.snapshots_sent,
++            s.stats.snapshots_applied,
++            s.stats.spends_sent,
++            s.stats.spends_applied,
++            s.client.pending(),
++            if s.stats.last_error.is_empty() { "-" } else { &s.stats.last_error }
++        )
++    })
++}
++
++// ---------------------------------------------------------------------------------------------
++// Game integration
++// ---------------------------------------------------------------------------------------------
++
++fn game_cash() -> Option<f32> {
++    let ptr = globals().ztgamemgr_ptr();
++    if ptr.is_null() { None } else { Some(unsafe { (*ptr).cash() }) }
++}
++
++fn set_game_cash(value: f32) {
++    let ptr = globals().ztgamemgr_ptr();
++    if !ptr.is_null() {
++        unsafe { (*ptr).set_cash_and_refresh(value) };
++    }
++}
++
++/// Called from the `ZTGameMgr::subtractCash` detour (vanilla callers only) before the local
++/// subtraction is applied. On the client the spend is also sent to the host.
++pub fn on_vanilla_subtract_cash(amount: f32) {
++    if !IS_CLIENT.load(Ordering::Relaxed) {
++        return;
++    }
++    with_session(|s| {
++        if s.role != Role::Client {
++            return;
++        }
++        let seq = s.client.record_spend(amount);
++        if s.send(Msg::Spend { seq, amount }) {
++            s.stats.spends_sent += 1;
++        }
++        info!("coop: client spend #{seq} {amount}");
++    });
++}
++
++/// Runs once per game frame on the game thread (from the `ZTApp::updateSim` detour).
++pub fn tick() {
++    let mut guard = SESSION.lock().unwrap();
++    let Some(s) = guard.as_mut() else { return };
++    if s.role == Role::Off {
++        return;
++    }
++
++    while let Ok(ev) = s.events_rx.try_recv() {
++        match ev {
++            NetEvent::Connected(peer) => info!("coop: link up {peer}"),
++            NetEvent::Disconnected(why) => {
++                info!("coop: link down {why}");
++                s.peer_ok = false;
++                s.stats.last_error = why;
++            }
++            NetEvent::Msg(Msg::Hello { protocol, role }) => {
++                if protocol != PROTOCOL_VERSION {
++                    s.stats.last_error = format!("protocol mismatch: peer {protocol}, us {PROTOCOL_VERSION}");
++                    warn!("coop: {}", s.stats.last_error);
++                    continue;
++                }
++                info!("coop: peer hello role={role}");
++                s.peer_ok = true;
++            }
++            NetEvent::Msg(Msg::Spend { seq, amount }) if s.role == Role::Host => {
++                // Lab mutant: proves the lab catches a host that never applies client spends.
++                if std::env::var_os("ZT_COOP_MUTANT").is_some_and(|m| m == "drop_spend") {
++                    continue;
++                }
++                if let Some(a) = s.host.accept(seq, amount) {
++                    let ptr = globals().ztgamemgr_ptr();
++                    if !ptr.is_null() {
++                        unsafe { (*ptr).subtract_cash(a) };
++                    }
++                    s.stats.spends_applied += 1;
++                    info!("coop: applied client spend #{seq} {a}");
++                }
++            }
++            NetEvent::Msg(Msg::CashState { cash, acked_spend, .. }) if s.role == Role::Client => {
++                let shown = s.client.apply_snapshot(cash, acked_spend);
++                s.stats.last_host_cash = cash;
++                s.stats.snapshots_applied += 1;
++                set_game_cash(shown);
++            }
++            NetEvent::Msg(_) => {}
++        }
++    }
++
++    if s.role == Role::Host && s.peer_ok && s.last_snapshot.elapsed() >= SNAPSHOT_INTERVAL {
++        s.last_snapshot = Instant::now();
++        if let Some(cash) = game_cash() {
++            s.snapshot_seq += 1;
++            let msg = Msg::CashState { seq: s.snapshot_seq, cash, acked_spend: s.host.last_applied };
++            if s.send(msg) {
++                s.stats.snapshots_sent += 1;
++                s.stats.last_host_cash = cash;
++            }
++        }
++    }
++}
++
++/// Loads a `.zoo` file (a save or a freeform map from `maps/`) the same way openzt's live test battery
++/// does. Used by the lab so neither copy needs menu clicks.
++fn load_zoo(path: &str) -> Result<String, String> {
++    use openzt_detour::generated::{standalone::{FCLOSE, FOPEN}, ztui_gameopts::LOAD_FILE};
++    let c = std::ffi::CString::new(path).map_err(|e| e.to_string())?;
++    let file = unsafe { FOPEN.original()(c.as_ptr() as u32, c"rb".as_ptr()) };
++    if file.is_null() {
++        return Err(format!("fopen failed: {path}"));
++    }
++    let r = unsafe { LOAD_FILE.original()(file as *const u8) };
++    unsafe { FCLOSE.original()(file) };
++    if r & 0xff != 0 { Ok(format!("loaded {path}")) } else { Err(format!("LOAD_FILE failed ({r:#x}) for {path}")) }
++}
++
++fn lua_result(r: Result<String, String>) -> (Option<String>, Option<String>) {
++    match r {
++        Ok(v) => (Some(v), None),
++        Err(e) => (None, Some(e)),
++    }
++}
++
++pub fn init() {
++    lua_fn!("coop_host", "ZooTogether: host a co-op session", "coop_host([port])", |port: Option<u16>| {
++        Ok(lua_result(host(port.unwrap_or(DEFAULT_PORT))))
++    });
++    lua_fn!("coop_join", "ZooTogether: join a host by ip[:port]", "coop_join(addr)", |addr: String| {
++        Ok(lua_result(join(&addr)))
++    });
++    lua_fn!("coop_stop", "ZooTogether: leave or stop hosting", "coop_stop()", || { Ok(stop()) });
++    lua_fn!("coop_status", "ZooTogether: session status line", "coop_status()", || { Ok(status()) });
++    lua_fn!("coop_cash", "ZooTogether: current budget", "coop_cash()", || {
++        Ok(game_cash().map(|c| format!("{c:.2}")).unwrap_or_else(|| "none".into()))
++    });
++    lua_fn!(
++        "coop_test_spend",
++        "ZooTogether lab: spend through the vanilla subtractCash entry point, like a purchase",
++        "coop_test_spend(amount)",
++        |amount: f32| {
++            let ptr = globals().ztgamemgr_ptr();
++            if ptr.is_null() {
++                return Ok("no ZTGameMgr".to_string());
++            }
++            unsafe { openzt_detour::generated::ztgamemgr::SUBTRACT_CASH.hooked()(ptr as *const u32, amount, false) };
++            Ok(format!("spent {amount}"))
++        }
++    );
++    lua_fn!("coop_load_zoo", "ZooTogether lab: load a .zoo save or map file", "coop_load_zoo(path)", |path: String| {
++        Ok(lua_result(load_zoo(&path)))
++    });
++
++    // Players start a session from the launch scripts through these.
++    if let Ok(port) = std::env::var("ZT_COOP_HOST") {
++        let port = port.parse().unwrap_or(DEFAULT_PORT);
++        if let Err(e) = host(port) {
++            warn!("coop: {e}");
++        }
++    } else if let Ok(addr) = std::env::var("ZT_COOP_JOIN") {
++        // The host may not be up yet; retry in the background.
++        thread::spawn(move || {
++            for _ in 0..120 {
++                match join(&addr) {
++                    Ok(_) => return,
++                    Err(e) => info!("coop: {e}, retrying"),
++                }
++                thread::sleep(Duration::from_secs(1));
++            }
++        });
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn frames_round_trip() {
++        let msgs = [
++            Msg::Hello { protocol: PROTOCOL_VERSION, role: ROLE_CLIENT },
++            Msg::CashState { seq: 7, cash: 12345.5, acked_spend: 3 },
++            Msg::Spend { seq: 9, amount: 250.0 },
++            Msg::Keepalive,
++        ];
++        for m in msgs {
++            let bytes = m.encode();
++            let len = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
++            assert_eq!(len, bytes.len() - 4);
++            assert_eq!(Msg::decode(&bytes[4..]), Some(m));
++        }
++    }
++
++    #[test]
++    fn decode_rejects_bad_frames() {
++        assert_eq!(Msg::decode(&[]), None);
++        assert_eq!(Msg::decode(&[99]), None);
++        assert_eq!(Msg::decode(&[T_CASH, 1, 2, 3]), None);
++        assert_eq!(Msg::decode(&[T_KEEPALIVE, 0]), None);
++    }
++
++    #[test]
++    fn client_ledger_hides_unacked_spends() {
++        let mut c = ClientLedger::default();
++        let a = c.record_spend(100.0);
++        let _b = c.record_spend(50.0);
++        // Snapshot from before either spend reached the host.
++        assert_eq!(c.apply_snapshot(1000.0, 0), 850.0);
++        // Host applied the first spend.
++        assert_eq!(c.apply_snapshot(900.0, a), 850.0);
++        assert_eq!(c.pending(), 1);
++        assert_eq!(c.apply_snapshot(850.0, a + 1), 850.0);
++        assert_eq!(c.pending(), 0);
++    }
++
++    #[test]
++    fn host_ledger_applies_each_spend_once() {
++        let mut h = HostLedger::default();
++        assert_eq!(h.accept(1, 10.0), Some(10.0));
++        assert_eq!(h.accept(1, 10.0), None);
++        assert_eq!(h.accept(2, f32::NAN), None);
++        assert_eq!(h.accept(3, 5.0), Some(5.0));
++    }
++
++    #[test]
++    fn tcp_link_carries_frames() {
++        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
++        let addr = listener.local_addr().unwrap();
++        let (tx, rx) = mpsc::channel();
++        let client = TcpStream::connect(addr).unwrap();
++        let (server, _) = listener.accept().unwrap();
++        let _link = spawn_link(client, tx, ROLE_CLIENT).unwrap();
++        let mut server = server;
++        assert_eq!(read_frame(&mut server).unwrap(), Msg::Hello { protocol: PROTOCOL_VERSION, role: ROLE_CLIENT });
++        server.write_all(&Msg::CashState { seq: 1, cash: 42.0, acked_spend: 0 }.encode()).unwrap();
++        let mut got = None;
++        for _ in 0..3 {
++            if let Ok(NetEvent::Msg(m)) = rx.recv_timeout(Duration::from_secs(2)) {
++                got = Some(m);
++                break;
++            }
++        }
++        assert_eq!(got, Some(Msg::CashState { seq: 1, cash: 42.0, acked_spend: 0 }));
++    }
++}
+diff --git a/openzt/src/lib.rs b/openzt/src/lib.rs
+index 4a0ac0d..928940c 100644
+--- a/openzt/src/lib.rs
++++ b/openzt/src/lib.rs
+@@ -13,6 +13,9 @@ mod capture_ztlog;
+ /// functions for registering commands with a function callback and hooks so that a command is run every game update
+ mod command_console;
+ 
++#[cfg(feature = "coop")]
++mod coop;
++
+ /// Commands and functions for reading entities and entity types from the ZTWorldMgr class
+ pub mod ztworldmgr;
+ 
+@@ -253,6 +256,8 @@ mod zoo_init {
+         bfentitytype::init();
+         settings::init();
+         scripting::init();
++        #[cfg(feature = "coop")]
++        coop::init();
+         shortcuts::init();
+         roofs::init();
+ 
+diff --git a/openzt/src/logging.rs b/openzt/src/logging.rs
+index 4d411ad..03ec311 100644
+--- a/openzt/src/logging.rs
++++ b/openzt/src/logging.rs
+@@ -45,6 +45,10 @@ pub fn init_with_console(
+ 
+ #[cfg(target_os = "windows")]
+ fn init_console() -> windows::core::Result<()> {
++    // Hidden lab copies and players who don't want a log window set OPENZT_NO_CONSOLE=1.
++    if std::env::var_os("OPENZT_NO_CONSOLE").is_some() {
++        return Ok(());
++    }
+     unsafe { FreeConsole()? };
+     unsafe { AllocConsole()? };
+     Ok(())
+diff --git a/openzt/src/ztgamemgr.rs b/openzt/src/ztgamemgr.rs
+index b81a048..260db83 100644
+--- a/openzt/src/ztgamemgr.rs
++++ b/openzt/src/ztgamemgr.rs
+@@ -355,6 +355,14 @@ impl ZTGameMgr {
+         unsafe { ZTUI_MAIN_SET_MONEY_TEXT.original()() };
+     }
+ 
++    /// Sets the budget and refreshes the on-screen money display. Used by ZooTogether co-op to apply
++    /// the host's authoritative budget on a client.
++    #[cfg(feature = "coop")]
++    pub(crate) fn set_cash_and_refresh(&mut self, value: f32) {
++        self.cash = value;
++        unsafe { ZTUI_MAIN_SET_MONEY_TEXT.original()() };
++    }
++
+     /// Ports `ZTGameMgr::addCash` (`ZTGameMgr_addCash.c`): adds `amount` to the budget,
+     /// then refreshes the on-screen money display (`ZTUI::main::setMoneyText`).
+     pub fn add_cash(&mut self, amount: f32) {
+@@ -1069,6 +1077,8 @@ mod gamemgr_finance_detours {
+     /// the detour's stack accounting matches the real function's.
+     #[detour(SUBTRACT_CASH)]
+     unsafe extern "thiscall" fn subtract_cash(this: *const u32, amount: f32, _unused: bool) {
++        #[cfg(feature = "coop")]
++        crate::coop::on_vanilla_subtract_cash(amount);
+         unsafe { mut_from_memory::<ZTGameMgr>(this) }.subtract_cash(amount);
+     }
+ 
+-- 
+2.56.0.windows.3
+
