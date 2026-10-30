@@ -4,8 +4,9 @@ Status: **join-in-progress, budget, date, pause, player cursors, building / sell
 staff, the admission price, building exhibits (fences, with their gate) and adopting animals work in a
 two-copy lab** (see "Lab"), and picking up and dropping staff or animals moves them on both copies.
 Firing staff and selling animals sync too, and the host's animals and staff (where they are,
-births, deaths, escapes) are mirrored on the client once a second. Version 0.9.0-dev (protocol 8).
-Not synced: guests (decoration on the client), animal needs/happiness, research, awards.
+births, deaths, escapes) are mirrored on the client once a second. Terrain edits (raising/lowering
+land, ground type) sync both ways. Version 0.10.0-dev (protocol 9). Not synced: guests (decoration on
+the client), animal needs/happiness, research, awards.
 How to work on this repo: [AGENTS.md](AGENTS.md) (Karpathy guidelines + project rules). Repo: https://github.com/multiplayereverything/zoo-tycoon-coop (no
 release yet). Built on [openzt](https://github.com/openzt1/openzt) (by the openzt authors; LICENSE file
 GPL-3.0, Cargo metadata MIT/Apache-2.0, so this repo is GPL-3.0), a Rust DLL that the game loads as
@@ -22,7 +23,7 @@ Zoo Tycoon\ZooTogether\          this repo (the game never scans it)
   scripts\setup-lab.ps1          makes private\lab-host + private\lab-client (hardlinked copies)
   scripts\zt_launch.py           starts a copy suspended, lifts the one-instance check, parks it
                                  off-screen, captures its window (PrintWindow, needs Pillow)
-  scripts\lab_coop.py            the two-copy co-op lab, 31 checks (+ 9 mutants)
+  scripts\lab_coop.py            the two-copy co-op lab, 32 checks (+ 10 mutants)
   scripts\lab_all.py             runs lab_coop normally and once per mutant, writes a summary table
   scripts\get-openzt.ps1         clones openzt at df01b96 and applies the patch into vendor\openzt
   patches\openzt-zoo-together.patch   our changes to openzt, as patches on upstream df01b96
@@ -117,7 +118,8 @@ Phases:
    placements too.
 8. **Moving staff and animals** (done, protocol 7): see "Building sync".
 9. **Animals and staff follow the host** (done, protocol 8): see "Living state".
-10. Guests, animal needs, research, awards (interest-managed, low rate), exhibits, research, awards. Until then
+10. **Terrain** (done, protocol 9): see "Terrain".
+11. Guests, animal needs, research, awards (interest-managed, low rate), exhibits, research, awards. Until then
    each copy simulates guests and animals on its own from the join snapshot on.
 
 ## Networking
@@ -130,7 +132,7 @@ Phases:
   State{seq,cash,acked_spend,acked_pause,paused,date[16],admission}, Spend{seq,amount},
   Pause{seq,paused}, ZooChunk{offset,total,data}, ZooLoaded{ok}, Cursor{visible,x,y,z},
   Placed/Removed{x,y,z,rotation,zt_type,zt_sub_type}, Admission{price}, Moved{from, to} (two
-  placements), Living{count u16, placements}, Keepalive (writer thread, 1 s; read timeout 30 s, per
+  placements), Living{count u16, placements}, Terrain{count u16, (tile u32, bytes[5])...}, Keepalive (writer thread, 1 s; read timeout 30 s, per
   Baldi's link-health lesson). A protocol mismatch shows in `coop_status()` and nothing is applied.
 
 ## Building sync (protocol 4-5, 2026-10-30)
@@ -223,6 +225,24 @@ the two sides. The host's set is the real one:
 - Guests are not synced: on the client they are decoration (income, admission and cash are the
   host's).
 
+## Terrain (protocol 9, 2026-10-30)
+
+Each tile (`BFTile`, 0x8c bytes, array at `ZTWorldMgr` tile_array) keeps its terrain in bytes
++0x80..+0x84 (ground type, height, flags). Each copy snapshots those 5 bytes for every tile and
+compares twice a second; tiles that changed are sent as `Terrain` (index, 5 bytes) and the other copy
+writes them and updates its snapshot (so nothing echoes back). A tile's graphics are pointers at
+about +0x5c..+0x6c chosen from its shape, so after writing the receiving copy recomputes them the way
+`BFMap::setZoom`'s loop does: `BFTile::validatePositions(tile, map, false)` then
+`BFTile::calculateShape(tile, map)` (map = `ZTMapView+0x360`). Tried first: writing the bytes alone
+left the host showing flat ground where the client had raised it (the graphics pointers stayed the
+flat ones).
+
+Tested with the Modify Terrain tool's Terrain Height (Construction panel's last tab (182,240), drag
+up, tick button (136,306)): both copies end with the same terrain hash. Not proven: that the
+receiving copy draws the new slope correctly (captures of these windows can be stale, and the
+graphics pointers can't be compared across processes); ground painting is the same bytes but is not
+tested on its own; a terraform the player cancels sends its preview and then the restore.
+
 ## Our changes to openzt (branch `zoo-together`)
 
 - `openzt/src/coop.rs` (new, feature `coop`): session, wire format, ledgers, pause sync, zoo transfer,
@@ -286,7 +306,15 @@ it). The script handles both. Output: `vendor\openzt\target\i686-pc-windows-msvc
   turns it on) did not work with posted clicks; it seems to pick the object under the *real* mouse,
   not checked. The lab sells through the game's sell path from Lua instead (`coop_test_sell`).
 
-### Results, living state (2026-10-30 11:04-, private\lab-results\*-summary.md)
+### Results, terrain (2026-10-30 14:30-, private\lab-results\*-summary.md)
+
+New check `terrain_c2h` and mutant `no_terrain`. Normal 14:28 32/32 (client and host terrain hash
+`9a623069c12dce00`), `no_terrain` 14:30 caught. Full suite 14:41-15:07
+(`20261030-150758-summary.md`): both normal runs 32/32, all 10 mutants caught. Trees and rocks: a bush (`foliage/bush1`) and a
+mound (`other/aftmound`) placed from the Construction panel's foliage and rocks tabs go through the
+same placement hook as buildings (single-copy probe; no two-copy check of their own).
+
+### Results, living state (2026-10-30 11:04-14:08)
 
 New checks: `living_match` (every host animal/staff member has a same-type one within 200 units on the
 client, counts equal), `living_birth` (a keeper made directly on the host, as a birth would be, shows
@@ -446,7 +474,8 @@ stole the reply meant for the next command. Each request now has its own reply c
   through `removeEntityFromMap`, so the other copy probably gets a second one instead of a move).
 - Two players building on the same tile at the same moment are not reconciled (no host validation).
 - Exhibits: tested with one fence type, one 3x3 square built by each side. Paths: one dirt path line
-  by the client. Tank exhibits, water, terrain (terraforming), trees and rocks are not tested.
+  by the client. Terrain: one raise by the client. Tank exhibits and water are not tested; trees and
+  rocks only on one copy.
 - Moves: tested with one keeper picked up through the game's function (not a mouse click on the
   walking keeper) by the client. If several entities of that type are close together, the replay may
   move a different one than the player did. A pick-up while the replaying player is carrying

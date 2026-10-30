@@ -40,6 +40,8 @@ Checks, in order:
                  builds the same fence, gets one more exhibit and shows no name prompt
   exhibit_h2c    the host builds its own exhibit the same way; the client gets it
   path_c2h       the client drags a path (Construction panel, Paths tab); the host gets the same pieces
+  terrain_c2h    the client raises ground (Modify Terrain tool, drag, then the tick button); both copies end
+                 with the same terrain bytes (+0x80..+0x84 of every tile)
   animal_c2h     the client adopts an African Elephant inside that exhibit; the host adds it
 
 --mutant nojoin      client never joins          -> zoo_transfer..client_spend must FAIL
@@ -53,6 +55,7 @@ Checks, in order:
 --mutant no_admission  client never sends its price -> admission_c2h must FAIL
 --mutant no_move     client never sends its moves -> move_c2h must FAIL
 --mutant no_living   host never sends its animals and staff -> living_* must FAIL
+--mutant no_terrain  client never sends its terrain edits -> terrain_c2h must FAIL
 
 build_drawn needs Pillow; the lab looks for it in private/pylib (pip install --target private/pylib pillow).
 
@@ -84,7 +87,7 @@ ALL_CHECKS = ["zoo_transfer", "layout", "cash_join", "host_change", "client_spen
               "host_pause", "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
               "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c", "hire_c2h",
               "admission_c2h", "admission_h2c", "move_c2h", "fire_c2h", "living_match", "living_birth", "living_death", "living_drift", "exhibit_c2h",
-              "exhibit_h2c", "path_c2h", "animal_c2h"]
+              "exhibit_h2c", "path_c2h", "terrain_c2h", "animal_c2h"]
 CURSOR_CHECKS = {"cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn"}
 EXPECTED_FAIL = {
     None: set(),
@@ -92,7 +95,7 @@ EXPECTED_FAIL = {
                "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
                "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c", "hire_c2h",
                "admission_c2h", "admission_h2c", "move_c2h", "fire_c2h", "living_match", "living_birth", "living_death",
-               "living_drift", "exhibit_c2h", "exhibit_h2c", "path_c2h", "animal_c2h"},
+               "living_drift", "exhibit_c2h", "exhibit_h2c", "path_c2h", "terrain_c2h", "animal_c2h"},
     "drop_spend": {"client_spend"},
     "no_date": {"date"},
     "no_cursor": {"cursor_c2h", "cursor_drawn"},
@@ -105,6 +108,7 @@ EXPECTED_FAIL = {
     "no_move": {"move_c2h"},
     # living_match is not in here: without Living the copies can still happen to agree.
     "no_living": {"living_birth", "living_death", "living_drift"},
+    "no_terrain": {"terrain_c2h"},
 }
 # Buy menu: the Buildings button, then a free grass pixel; the first item (Snack Machine) is selected.
 BUILDINGS_BUTTON = (25, 125)
@@ -123,7 +127,10 @@ NAME_OK = (406, 332)  # OK in the "New Exhibit Name" prompt
 EXHIBIT_S, AXIS_A, AXIS_B = (520, 140), (96, 48), (96, -48)
 HOST_EXHIBIT_S = (300, 170)
 PATHS_TAB = (182, 108)  # second tab on the Construction panel's right edge
-PATH_FROM = (360, 300)  # on grass between the exhibits and the entrance path  # the host's own exhibit, left of the client's
+PATH_FROM = (360, 300)
+TERRAIN_TAB = (182, 240)  # Construction panel's last tab: Modify Terrain
+TERRAIN_FROM = (650, 400)  # drag up from here raises the ground
+TERRAIN_OK = (136, 306)  # the tool's tick button  # on grass between the exhibits and the entrance path  # the host's own exhibit, left of the client's
 
 
 def lua(addr, code, timeout=30.0):
@@ -212,7 +219,7 @@ def run(args, results):
     pids = results["pids"]
     base_env = {"OPENZT_NO_CONSOLE": "1", "ZT_LAB_FAKE_MOUSE": "1"}
     client_env = dict(base_env)
-    if args.mutant in ("no_date", "no_cursor", "no_place", "no_remove", "no_admission", "no_move"):
+    if args.mutant in ("no_date", "no_cursor", "no_place", "no_remove", "no_admission", "no_move", "no_terrain"):
         client_env["ZT_COOP_MUTANT"] = args.mutant
     host_env = dict(base_env)
     if args.mutant in ("drop_spend", "no_living"):
@@ -422,7 +429,7 @@ def run(args, results):
     if not checks["zoo_transfer"]:
         # The client never entered the zoo (nojoin): the in-zoo steps below would click its menu.
         for k in ("move_c2h", "fire_c2h", "living_match", "living_birth", "living_death", "living_drift", "exhibit_c2h", "exhibit_h2c",
-                  "path_c2h", "animal_c2h"):
+                  "path_c2h", "terrain_c2h", "animal_c2h"):
             checks[k] = False
         return
 
@@ -561,6 +568,28 @@ def run(args, results):
         return added if added and added <= host else None
 
     added = wait_until(path_pieces, 3)
+
+    # Terrain: raise a patch with the Modify Terrain tool and confirm.
+    terrain0 = lua(CLIENT_CONSOLE, "return coop_terrain_hash()")
+    open_panel(client_pid, CLIENT_CONSOLE, CONSTRUCTION_BUTTON)
+    ui_click(client_pid, CLIENT_CONSOLE, *TERRAIN_TAB)
+    time.sleep(0.5)
+    ui_click(client_pid, CLIENT_CONSOLE, *FENCE_ITEM)  # first tool: Terrain Height
+    zt_launch.drag(client_pid, *TERRAIN_FROM, TERRAIN_FROM[0], TERRAIN_FROM[1] - 70, on_move=move)
+    lua(CLIENT_CONSOLE, "return coop_test_cursor(-1, 0)")
+    ui_click(client_pid, CLIENT_CONSOLE, *TERRAIN_OK)
+    time.sleep(1)
+
+    def same_terrain():
+        c = lua(CLIENT_CONSOLE, "return coop_terrain_hash()")
+        return c if c != terrain0 and c == lua(HOST_CONSOLE, "return coop_terrain_hash()") else None
+
+    terrain1 = wait_until(same_terrain, 3)
+    checks["terrain_c2h"] = bool(terrain1)
+    results["terrain"] = {"before": terrain0, "client": lua(CLIENT_CONSOLE, "return coop_terrain_hash()"),
+                          "host": lua(HOST_CONSOLE, "return coop_terrain_hash()"),
+                          "host_applied": status(HOST_CONSOLE).get("terrain_applied")}
+    close_panel(client_pid, CLIENT_CONSOLE)
     client_added = set(lua(CLIENT_CONSOLE, "return coop_layout_list()").splitlines()) - before
     checks["path_c2h"] = bool(added)
     results["path"] = {"client_added": sorted(client_added)[:6], "client_added_count": len(client_added)}
@@ -584,7 +613,7 @@ def run(args, results):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mutant", choices=["nojoin", "drop_spend", "no_date", "no_cursor", "no_place", "no_remove", "no_admission", "no_move", "no_living"], default=None)
+    ap.add_argument("--mutant", choices=["nojoin", "drop_spend", "no_date", "no_cursor", "no_place", "no_remove", "no_admission", "no_move", "no_living", "no_terrain"], default=None)
     ap.add_argument("--keep", action="store_true", help="leave the copies running")
     ap.add_argument("--shots", action="store_true", help="save window captures (needs Pillow)")
     args = ap.parse_args()

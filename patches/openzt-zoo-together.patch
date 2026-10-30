@@ -1,7 +1,7 @@
 From beed50b7f5098f3cbb80e31447184686bcd50973 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 01:22:29 +0200
-Subject: [PATCH 01/10] ZooTogether: host-authoritative shared budget over TCP
+Subject: [PATCH 01/11] ZooTogether: host-authoritative shared budget over TCP
  (coop feature)
 
 - coop.rs: session, framed wire protocol, client/host spend ledgers, Lua commands
@@ -830,7 +830,7 @@ index b81a048..260db83 100644
 From e8c69374d76e8860a39f03cf99191bf42b78d805 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 03:31:53 +0200
-Subject: [PATCH 02/10] ZooTogether protocol 2: join-in-progress zoo transfer,
+Subject: [PATCH 02/11] ZooTogether protocol 2: join-in-progress zoo transfer,
  date and pause sync
 
 - Host saves its zoo through SAVE_GAME (save dialog detoured to a fixed path) and streams it in
@@ -1833,7 +1833,7 @@ index 1ec6ce8..909a1f4 100644
 From 0451b17ae2cc9fd5a5004d7f9081254fde9ddfc8 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 05:16:29 +0200
-Subject: [PATCH 03/10] ZooTogether protocol 3: player cursors
+Subject: [PATCH 03/11] ZooTogether protocol 3: player cursors
 
 - Cursor message (world position, 10 Hz max, on change) both ways
 - Screen<->world via ZTMapView/BFMap camera origin and virtualToWorld/worldToVirtual
@@ -2226,7 +2226,7 @@ index c52bee2..5fc2ef0 100644
 From c79f2687e6163315b58e09882bc8d7a353ad8420 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 06:31:20 +0200
-Subject: [PATCH 04/10] ZooTogether protocol 4: building sync (placements both
+Subject: [PATCH 04/11] ZooTogether protocol 4: building sync (placements both
  ways)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -2541,7 +2541,7 @@ index 909a1f4..340a2d5 100644
 From 4ca25cb39daa9728012c4a5adf0e22fadf19624b Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 07:01:23 +0200
-Subject: [PATCH 05/10] ZooTogether protocol 5: removal sync; re-entrancy-safe
+Subject: [PATCH 05/11] ZooTogether protocol 5: removal sync; re-entrancy-safe
  console and coop tick
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -2918,7 +2918,7 @@ index 340a2d5..ad6935b 100644
 From dcf6482a19e874e32e6b1be3f9d8552db4f096c7 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 07:18:28 +0200
-Subject: [PATCH 06/10] ZooTogether protocol 6: admission price sync
+Subject: [PATCH 06/11] ZooTogether protocol 6: admission price sync
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -3174,7 +3174,7 @@ index b3fac1a..546ae16 100644
 From a1b063018e7a4298a9f25ec55182ef462e5716fb Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 08:48:36 +0200
-Subject: [PATCH 07/10] ZooTogether: exhibits and animals (fence replay
+Subject: [PATCH 07/11] ZooTogether: exhibits and animals (fence replay
  position, name prompt, gate reconcile), lab fake mouse
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -3446,7 +3446,7 @@ index 897f7e0..56e88e9 100644
 From 1488657e91838f45a7b8d38bd7ab5fde3dbffc60 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 09:56:03 +0200
-Subject: [PATCH 08/10] ZooTogether protocol 7: moving staff and animals
+Subject: [PATCH 08/11] ZooTogether protocol 7: moving staff and animals
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -3783,7 +3783,7 @@ index ad6935b..73ebe45 100644
 From 7fc4950bb1b8353f340b4b1563ae5b79c7ac9060 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 10:47:22 +0200
-Subject: [PATCH 09/10] ZooTogether: firing staff / selling animals; clear undo
+Subject: [PATCH 09/11] ZooTogether: firing staff / selling animals; clear undo
  and selection after replays
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -3957,7 +3957,7 @@ index 73ebe45..3ecf072 100644
 From 98690a09e0aa78f36d1776688e5afa591cc9bc84 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 14:08:54 +0200
-Subject: [PATCH 10/10] ZooTogether protocol 8: animals and staff follow the
+Subject: [PATCH 10/11] ZooTogether protocol 8: animals and staff follow the
  host (Living), player-only removals
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -4293,6 +4293,266 @@ index 5e18540..4e0e992 100644
          round_trip(Msg::Spend { seq: 9, amount: 250.0 });
          round_trip(Msg::Pause { seq: 4, paused: false });
          round_trip(Msg::ZooChunk { offset: 32, total: 40, data: vec![9; 8] });
+-- 
+2.56.0.windows.3
+
+
+From 367918e0a532acfbcaf664cc02970a4eb47a8136 Mon Sep 17 00:00:00 2001
+From: multiplayereverything <multiplayereverythingofficial@gmail.com>
+Date: Fri, 30 Oct 2026 15:08:21 +0200
+Subject: [PATCH 11/11] ZooTogether protocol 9: terrain sync
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ openzt/src/coop.rs       | 132 ++++++++++++++++++++++++++++++++++++++-
+ openzt/src/ztworldmgr.rs |   7 +++
+ 2 files changed, 137 insertions(+), 2 deletions(-)
+
+diff --git a/openzt/src/coop.rs b/openzt/src/coop.rs
+index 4e0e992..b71a23d 100644
+--- a/openzt/src/coop.rs
++++ b/openzt/src/coop.rs
+@@ -36,7 +36,7 @@ use tracing::{error, info, warn};
+ 
+ use crate::{globals::globals, lua_fn};
+ 
+-pub const PROTOCOL_VERSION: u16 = 8;
++pub const PROTOCOL_VERSION: u16 = 9;
+ pub const DEFAULT_PORT: u16 = 27150;
+ const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(200);
+ const LIVING_INTERVAL: Duration = Duration::from_secs(1);
+@@ -72,6 +72,8 @@ pub enum Msg {
+     Moved(Placement, Placement),
+     /// Host -> client, once a second: every animal and staff member on the host (type and position).
+     Living(Vec<Placement>),
++    /// Tiles whose terrain (ground type, height, flags: tile bytes +0x80..+0x84) the sender changed.
++    Terrain(Vec<(u32, [u8; 5])>),
+     Keepalive,
+ }
+ 
+@@ -109,6 +111,7 @@ const T_REMOVED: u8 = 10;
+ const T_ADMISSION: u8 = 11;
+ const T_MOVED: u8 = 12;
+ const T_LIVING: u8 = 13;
++const T_TERRAIN: u8 = 14;
+ 
+ fn put_placement(b: &mut Vec<u8>, pl: &Placement) {
+     for v in pl.pos.iter().chain([pl.rotation].iter()) {
+@@ -200,6 +203,14 @@ impl Msg {
+                 put_placement(&mut b, from);
+                 put_placement(&mut b, to);
+             }
++            Msg::Terrain(tiles) => {
++                b.push(T_TERRAIN);
++                b.extend_from_slice(&(tiles.len() as u16).to_le_bytes());
++                for (i, t) in tiles {
++                    b.extend_from_slice(&i.to_le_bytes());
++                    b.extend_from_slice(t);
++                }
++            }
+             Msg::Living(all) => {
+                 b.push(T_LIVING);
+                 b.extend_from_slice(&(all.len() as u16).to_le_bytes());
+@@ -253,6 +264,10 @@ impl Msg {
+                 (at == p.len()).then_some(())?;
+                 Some(if t == T_PLACED { Msg::Placed(pl) } else { Msg::Removed(pl) })
+             }
++            T_TERRAIN if p.len() >= 2 && (p.len() - 2) % 9 == 0 && (p.len() - 2) / 9 == u16_at(0)? as usize => {
++                let tiles = p[2..].chunks(9).map(|c| (u32::from_le_bytes([c[0], c[1], c[2], c[3]]), [c[4], c[5], c[6], c[7], c[8]])).collect();
++                Some(Msg::Terrain(tiles))
++            }
+             T_LIVING if p.len() >= 2 => {
+                 let n = u16_at(0)? as usize;
+                 let mut at = 2;
+@@ -530,6 +545,8 @@ struct Stats {
+     living_sent: u32,
+     living_applied: u32,
+     living_fixed: u32,
++    terrain_sent: u32,
++    terrain_applied: u32,
+     last_host_cash: f32,
+     last_error: String,
+ }
+@@ -647,7 +664,7 @@ fn status() -> String {
+     with_session(|s| {
+         let cash = game_cash().map(|c| format!("{c:.2}")).unwrap_or_else(|| "none".into());
+         format!(
+-            "role={:?} connected={} world_ready={} in_game={} paused={} date={} cash={} host_cash={:.2} snapshots_sent={} snapshots_applied={} spends_sent={} spends_applied={} pauses_sent={} pauses_applied={} zoo_bytes={} pending={} local_cursor={} remote_cursor={} remote_screen={} cursors_sent={} cursors_drawn={} places_sent={} places_applied={} last_placed={} removes_sent={} removes_applied={} last_removed={} admission={} admissions_sent={} admissions_applied={} exhibits={} moves_sent={} moves_applied={} last_moved={} living={} living_sent={} living_applied={} living_fixed={} last_error={}",
++            "role={:?} connected={} world_ready={} in_game={} paused={} date={} cash={} host_cash={:.2} snapshots_sent={} snapshots_applied={} spends_sent={} spends_applied={} pauses_sent={} pauses_applied={} zoo_bytes={} pending={} local_cursor={} remote_cursor={} remote_screen={} cursors_sent={} cursors_drawn={} places_sent={} places_applied={} last_placed={} removes_sent={} removes_applied={} last_removed={} admission={} admissions_sent={} admissions_applied={} exhibits={} moves_sent={} moves_applied={} last_moved={} living={} living_sent={} living_applied={} living_fixed={} terrain_sent={} terrain_applied={} last_error={}",
+             s.role,
+             s.peer_ok,
+             s.world_ready,
+@@ -686,6 +703,8 @@ fn status() -> String {
+             s.stats.living_sent,
+             s.stats.living_applied,
+             s.stats.living_fixed,
++            s.stats.terrain_sent,
++            s.stats.terrain_applied,
+             if s.stats.last_error.is_empty() { "-" } else { &s.stats.last_error }
+         )
+     })
+@@ -845,6 +864,10 @@ pub fn tick() {
+                 set_admission(price);
+                 s.stats.admissions_applied += 1;
+             }
++            NetEvent::Msg(Msg::Terrain(tiles)) if (s.role == Role::Host || s.world_ready) && in_game() => {
++                apply_terrain(&tiles);
++                s.stats.terrain_applied += tiles.len() as u32;
++            }
+             NetEvent::Msg(Msg::Living(all)) if s.role == Role::Client && s.world_ready && in_game() => {
+                 s.stats.living_fixed += reconcile_living(&all);
+                 s.stats.living_applied += 1;
+@@ -943,6 +966,9 @@ pub fn tick() {
+             s.stats.moves_sent += 1;
+         }
+     }
++    if ready && in_game() {
++        terrain_tick(s);
++    }
+     let removed: Vec<Placement> = PENDING_REMOVED.lock().unwrap().drain(..).collect();
+     for pl in removed {
+         if ready && !mutant("no_remove") && s.send(Msg::Removed(pl)) {
+@@ -1468,6 +1494,85 @@ fn relocate(entity: u32, to: &Placement) -> Result<(), String> {
+     Ok(())
+ }
+ 
++// --- terrain -----------------------------------------------------------------------------------
++//
++// Painting ground and raising / lowering land change tile bytes +0x80..+0x84 (`BFTile`: +0x80 ground
++// type, +0x81 height, +0x83 flags; `BFTile::setTerrainType` 0x4f17e0, `raise` 0x45e416, `lower`
++// 0x45e70f, which also reach neighbouring tiles). Each copy keeps a snapshot of those bytes, compares
++// twice a second and sends the tiles that changed; the other copy writes them and updates its
++// snapshot so it doesn't send them back. Changes both copies make anyway (a replayed path or fence
++// sets the same flags on both) just arrive as no-ops.
++
++const TERRAIN_INTERVAL: Duration = Duration::from_millis(500);
++static TERRAIN_SNAP: Mutex<Option<Vec<[u8; 5]>>> = Mutex::new(None);
++static TERRAIN_LAST: Mutex<Option<Instant>> = Mutex::new(None);
++/// Lab: the terrain as first seen, to list what changed since (`coop_changed_tiles`).
++static FIRST_TERRAIN: Mutex<Option<Vec<[u8; 5]>>> = Mutex::new(None);
++
++fn read_terrain() -> Vec<[u8; 5]> {
++    let (base, count) = crate::ztworldmgr::coop_tiles();
++    if base == 0 {
++        return Vec::new();
++    }
++    (0..count).map(|i| unsafe { *((base + i * 0x8c + 0x80) as *const [u8; 5]) }).collect()
++}
++
++fn terrain_tick(s: &mut Session) {
++    {
++        let mut last = TERRAIN_LAST.lock().unwrap();
++        if last.is_some_and(|t| t.elapsed() < TERRAIN_INTERVAL) {
++            return;
++        }
++        *last = Some(Instant::now());
++    }
++    let now = read_terrain();
++    let mut snap = TERRAIN_SNAP.lock().unwrap();
++    let changed: Vec<(u32, [u8; 5])> = match snap.as_ref() {
++        Some(old) if old.len() == now.len() => {
++            now.iter().enumerate().filter(|(i, t)| old[*i] != **t).map(|(i, t)| (i as u32, *t)).collect()
++        }
++        _ => {
++            *FIRST_TERRAIN.lock().unwrap() = Some(now.clone());
++            Vec::new() // first look (or another map): nothing to send yet
++        }
++    };
++    *snap = Some(now);
++    drop(snap);
++    if changed.is_empty() || mutant("no_terrain") {
++        return;
++    }
++    for chunk in changed.chunks(4000) {
++        if s.send(Msg::Terrain(chunk.to_vec())) {
++            s.stats.terrain_sent += chunk.len() as u32;
++        }
++    }
++}
++
++fn apply_terrain(tiles: &[(u32, [u8; 5])]) {
++    use openzt_detour::generated::bftile::{CALCULATE_SHAPE, VALIDATE_POSITIONS};
++    use openzt_detour::generated::ztui_general::GET_MAPVIEW;
++    let (base, count) = crate::ztworldmgr::coop_tiles();
++    let mapview = unsafe { GET_MAPVIEW.original()() };
++    if base == 0 || mapview.is_null() {
++        return;
++    }
++    let map = unsafe { *((mapview as u32 + 0x360) as *const u32) };
++    let mut snap = TERRAIN_SNAP.lock().unwrap();
++    for &(i, t) in tiles.iter().filter(|(i, _)| *i < count) {
++        let tile = base + i * 0x8c;
++        unsafe {
++            *((tile + 0x80) as *mut [u8; 5]) = t;
++            // A tile's graphics (pointers at +0x5c..+0x6c) follow its shape; recompute them the way
++            // `BFMap::setZoom`'s loop does (0x4af1c2..0x4af1ca).
++            VALIDATE_POSITIONS.original()(tile as *const u32, map as *const u32, false);
++            CALCULATE_SHAPE.original()(tile as *const u32, map as *const std::ffi::c_void);
++        }
++        if let Some(old) = snap.as_mut().filter(|o| o.len() == count as usize) {
++            old[i as usize] = t;
++        }
++    }
++}
++
+ // --- living state ------------------------------------------------------------------------------
+ //
+ // Animals and staff walk, escape, are born and die on each copy's own simulation. The host's set is
+@@ -2000,6 +2105,27 @@ pub fn init() {
+             let to = Placement { zt_type: t, zt_sub_type: sub, pos: [nx, ny, 0], rotation: old.rotation };
+             Ok(lua_result(remove_entity(&old).and_then(|()| place_entity(&to)).map(|_| fmt_placement(&to))))
+         });
++    lua_fn!("coop_terrain_hash", "ZooTogether lab: tile count and a hash of every tile's terrain bytes", "coop_terrain_hash()", || {
++        use std::hash::{Hash, Hasher};
++        let t = read_terrain();
++        let mut h = std::collections::hash_map::DefaultHasher::new();
++        t.hash(&mut h);
++        Ok(format!("tiles={} hash={:016x}", t.len(), h.finish()))
++    });
++    lua_fn!("coop_tile_bytes", "ZooTogether lab: hex of tile i's bytes +0x24..+0x8c", "coop_tile_bytes(i)", |i: u32| {
++        let (base, count) = crate::ztworldmgr::coop_tiles();
++        if base == 0 || i >= count {
++            return Ok("none".to_string());
++        }
++        let b = unsafe { std::slice::from_raw_parts((base + i * 0x8c + 0x24) as *const u8, 0x8c - 0x24) };
++        Ok(b.iter().map(|x| format!("{x:02x}")).collect::<String>())
++    });
++    lua_fn!("coop_changed_tiles", "ZooTogether lab: indexes whose terrain bytes differ from the last snapshot's first look", "coop_changed_tiles()", || {
++        let first = FIRST_TERRAIN.lock().unwrap().clone().unwrap_or_default();
++        let now = read_terrain();
++        let v: Vec<String> = now.iter().enumerate().filter(|(i, t)| first.get(*i).is_some_and(|f| f != *t)).map(|(i, _)| i.to_string()).collect();
++        Ok(if v.is_empty() { "none".into() } else { v.join(",") })
++    });
+     lua_fn!("coop_place", "ZooTogether: build type/subtype at world x, y, z with rotation", "coop_place(type, subtype, x, y, z, rot)",
+         |t: String, sub: String, x: i32, y: i32, z: i32, rot: i32| {
+             let pl = Placement { zt_type: t, zt_sub_type: sub, pos: [x, y, z], rotation: rot };
+@@ -2057,6 +2183,8 @@ mod tests {
+         round_trip(Msg::Moved(a.clone(), Placement { pos: [1600, 2416, 0], rotation: 2, ..a.clone() }));
+         round_trip(Msg::Living(vec![a.clone(), Placement { zt_type: "keeper".into(), zt_sub_type: "f".into(), ..a }]));
+         round_trip(Msg::Living(vec![]));
++        round_trip(Msg::Terrain(vec![(7, [1, 2, 3, 4, 5]), (65000, [0; 5])]));
++        round_trip(Msg::Terrain(vec![]));
+         round_trip(Msg::Spend { seq: 9, amount: 250.0 });
+         round_trip(Msg::Pause { seq: 4, paused: false });
+         round_trip(Msg::ZooChunk { offset: 32, total: 40, data: vec![9; 8] });
+diff --git a/openzt/src/ztworldmgr.rs b/openzt/src/ztworldmgr.rs
+index 3ecf072..753c8f1 100644
+--- a/openzt/src/ztworldmgr.rs
++++ b/openzt/src/ztworldmgr.rs
+@@ -1346,6 +1346,13 @@ pub(crate) fn coop_static_entities() -> Vec<u32> {
+         .collect()
+ }
+ 
++/// ZooTogether co-op: the map's tile array (`BFTile`, 0x8c bytes each) and its tile count.
++#[cfg(feature = "coop")]
++pub(crate) fn coop_tiles() -> (u32, u32) {
++    let w = globals().ztworldmgr();
++    (w.tile_array, w.map_x_size * w.map_y_size)
++}
++
+ /// ZooTogether co-op: pointers of the animals and staff (not guests).
+ #[cfg(feature = "coop")]
+ pub(crate) fn coop_living_entities() -> Vec<u32> {
 -- 
 2.56.0.windows.3
 
