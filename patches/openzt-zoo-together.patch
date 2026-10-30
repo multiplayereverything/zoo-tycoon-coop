@@ -1,7 +1,7 @@
 From beed50b7f5098f3cbb80e31447184686bcd50973 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 01:22:29 +0200
-Subject: [PATCH 01/11] ZooTogether: host-authoritative shared budget over TCP
+Subject: [PATCH 01/12] ZooTogether: host-authoritative shared budget over TCP
  (coop feature)
 
 - coop.rs: session, framed wire protocol, client/host spend ledgers, Lua commands
@@ -830,7 +830,7 @@ index b81a048..260db83 100644
 From e8c69374d76e8860a39f03cf99191bf42b78d805 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 03:31:53 +0200
-Subject: [PATCH 02/11] ZooTogether protocol 2: join-in-progress zoo transfer,
+Subject: [PATCH 02/12] ZooTogether protocol 2: join-in-progress zoo transfer,
  date and pause sync
 
 - Host saves its zoo through SAVE_GAME (save dialog detoured to a fixed path) and streams it in
@@ -1833,7 +1833,7 @@ index 1ec6ce8..909a1f4 100644
 From 0451b17ae2cc9fd5a5004d7f9081254fde9ddfc8 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 05:16:29 +0200
-Subject: [PATCH 03/11] ZooTogether protocol 3: player cursors
+Subject: [PATCH 03/12] ZooTogether protocol 3: player cursors
 
 - Cursor message (world position, 10 Hz max, on change) both ways
 - Screen<->world via ZTMapView/BFMap camera origin and virtualToWorld/worldToVirtual
@@ -2226,7 +2226,7 @@ index c52bee2..5fc2ef0 100644
 From c79f2687e6163315b58e09882bc8d7a353ad8420 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 06:31:20 +0200
-Subject: [PATCH 04/11] ZooTogether protocol 4: building sync (placements both
+Subject: [PATCH 04/12] ZooTogether protocol 4: building sync (placements both
  ways)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -2541,7 +2541,7 @@ index 909a1f4..340a2d5 100644
 From 4ca25cb39daa9728012c4a5adf0e22fadf19624b Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 07:01:23 +0200
-Subject: [PATCH 05/11] ZooTogether protocol 5: removal sync; re-entrancy-safe
+Subject: [PATCH 05/12] ZooTogether protocol 5: removal sync; re-entrancy-safe
  console and coop tick
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -2918,7 +2918,7 @@ index 340a2d5..ad6935b 100644
 From dcf6482a19e874e32e6b1be3f9d8552db4f096c7 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 07:18:28 +0200
-Subject: [PATCH 06/11] ZooTogether protocol 6: admission price sync
+Subject: [PATCH 06/12] ZooTogether protocol 6: admission price sync
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -3174,7 +3174,7 @@ index b3fac1a..546ae16 100644
 From a1b063018e7a4298a9f25ec55182ef462e5716fb Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 08:48:36 +0200
-Subject: [PATCH 07/11] ZooTogether: exhibits and animals (fence replay
+Subject: [PATCH 07/12] ZooTogether: exhibits and animals (fence replay
  position, name prompt, gate reconcile), lab fake mouse
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -3446,7 +3446,7 @@ index 897f7e0..56e88e9 100644
 From 1488657e91838f45a7b8d38bd7ab5fde3dbffc60 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 09:56:03 +0200
-Subject: [PATCH 08/11] ZooTogether protocol 7: moving staff and animals
+Subject: [PATCH 08/12] ZooTogether protocol 7: moving staff and animals
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -3783,7 +3783,7 @@ index ad6935b..73ebe45 100644
 From 7fc4950bb1b8353f340b4b1563ae5b79c7ac9060 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 10:47:22 +0200
-Subject: [PATCH 09/11] ZooTogether: firing staff / selling animals; clear undo
+Subject: [PATCH 09/12] ZooTogether: firing staff / selling animals; clear undo
  and selection after replays
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -3957,7 +3957,7 @@ index 73ebe45..3ecf072 100644
 From 98690a09e0aa78f36d1776688e5afa591cc9bc84 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 14:08:54 +0200
-Subject: [PATCH 10/11] ZooTogether protocol 8: animals and staff follow the
+Subject: [PATCH 10/12] ZooTogether protocol 8: animals and staff follow the
  host (Living), player-only removals
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -4300,7 +4300,7 @@ index 5e18540..4e0e992 100644
 From 367918e0a532acfbcaf664cc02970a4eb47a8136 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 15:08:21 +0200
-Subject: [PATCH 11/11] ZooTogether protocol 9: terrain sync
+Subject: [PATCH 11/12] ZooTogether protocol 9: terrain sync
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -4553,6 +4553,334 @@ index 3ecf072..753c8f1 100644
  /// ZooTogether co-op: pointers of the animals and staff (not guests).
  #[cfg(feature = "coop")]
  pub(crate) fn coop_living_entities() -> Vec<u32> {
+-- 
+2.56.0.windows.3
+
+
+From 565ce561be745fa127d3d118733df081448f7dca Mon Sep 17 00:00:00 2001
+From: multiplayereverything <multiplayereverythingofficial@gmail.com>
+Date: Fri, 30 Oct 2026 16:10:55 +0200
+Subject: [PATCH 12/12] ZooTogether protocol 10: research sync
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ openzt/src/coop.rs       | 130 ++++++++++++++++++++++++++++++++++++++-
+ openzt/src/ztresearch.rs |  56 +++++++++++++++++
+ 2 files changed, 184 insertions(+), 2 deletions(-)
+
+diff --git a/openzt/src/coop.rs b/openzt/src/coop.rs
+index b71a23d..fd0afc0 100644
+--- a/openzt/src/coop.rs
++++ b/openzt/src/coop.rs
+@@ -36,7 +36,7 @@ use tracing::{error, info, warn};
+ 
+ use crate::{globals::globals, lua_fn};
+ 
+-pub const PROTOCOL_VERSION: u16 = 9;
++pub const PROTOCOL_VERSION: u16 = 10;
+ pub const DEFAULT_PORT: u16 = 27150;
+ const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(200);
+ const LIVING_INTERVAL: Duration = Duration::from_secs(1);
+@@ -74,6 +74,10 @@ pub enum Msg {
+     Living(Vec<Placement>),
+     /// Tiles whose terrain (ground type, height, flags: tile bytes +0x80..+0x84) the sender changed.
+     Terrain(Vec<(u32, [u8; 5])>),
++    /// Host -> client, once a second: each research branch (id, funding level, program id, progress).
++    Research(Vec<(i32, i32, i32, f32)>),
++    /// Client -> host: the client's player set a branch's funding level (branch id, level).
++    ResearchFunding(i32, i32),
+     Keepalive,
+ }
+ 
+@@ -112,6 +116,8 @@ const T_ADMISSION: u8 = 11;
+ const T_MOVED: u8 = 12;
+ const T_LIVING: u8 = 13;
+ const T_TERRAIN: u8 = 14;
++const T_RESEARCH: u8 = 15;
++const T_RESEARCH_FUNDING: u8 = 16;
+ 
+ fn put_placement(b: &mut Vec<u8>, pl: &Placement) {
+     for v in pl.pos.iter().chain([pl.rotation].iter()) {
+@@ -203,6 +209,21 @@ impl Msg {
+                 put_placement(&mut b, from);
+                 put_placement(&mut b, to);
+             }
++            Msg::Research(branches) => {
++                b.push(T_RESEARCH);
++                b.extend_from_slice(&(branches.len() as u16).to_le_bytes());
++                for (id, level, program, progress) in branches {
++                    for v in [*id, *level, *program] {
++                        b.extend_from_slice(&v.to_le_bytes());
++                    }
++                    b.extend_from_slice(&progress.to_le_bytes());
++                }
++            }
++            Msg::ResearchFunding(id, level) => {
++                b.push(T_RESEARCH_FUNDING);
++                b.extend_from_slice(&id.to_le_bytes());
++                b.extend_from_slice(&level.to_le_bytes());
++            }
+             Msg::Terrain(tiles) => {
+                 b.push(T_TERRAIN);
+                 b.extend_from_slice(&(tiles.len() as u16).to_le_bytes());
+@@ -264,6 +285,15 @@ impl Msg {
+                 (at == p.len()).then_some(())?;
+                 Some(if t == T_PLACED { Msg::Placed(pl) } else { Msg::Removed(pl) })
+             }
++            T_RESEARCH if p.len() >= 2 && (p.len() - 2) % 16 == 0 && (p.len() - 2) / 16 == u16_at(0)? as usize => {
++                let i32_at = |i: usize| u32_at(i).map(|v| v as i32);
++                let n = u16_at(0)? as usize;
++                let branches = (0..n)
++                    .map(|k| Some((i32_at(2 + k * 16)?, i32_at(6 + k * 16)?, i32_at(10 + k * 16)?, f32_at(14 + k * 16)?)))
++                    .collect::<Option<Vec<_>>>()?;
++                Some(Msg::Research(branches))
++            }
++            T_RESEARCH_FUNDING if p.len() == 8 => Some(Msg::ResearchFunding(u32_at(0)? as i32, u32_at(4)? as i32)),
+             T_TERRAIN if p.len() >= 2 && (p.len() - 2) % 9 == 0 && (p.len() - 2) / 9 == u16_at(0)? as usize => {
+                 let tiles = p[2..].chunks(9).map(|c| (u32::from_le_bytes([c[0], c[1], c[2], c[3]]), [c[4], c[5], c[6], c[7], c[8]])).collect();
+                 Some(Msg::Terrain(tiles))
+@@ -505,6 +535,11 @@ struct Session {
+     peer_ok: bool,
+     last_snapshot: Instant,
+     last_living: Instant,
++    last_research: Instant,
++    /// Client: the funding level each branch had after the host's last `Research`, and the branches whose
++    /// level this player changed since and the host hasn't confirmed yet (level, when sent).
++    research_host_levels: Vec<(i32, i32)>,
++    research_pending: Vec<(i32, i32, Instant)>,
+     snapshot_seq: u32,
+     host: HostLedger,
+     host_pause: HostLedger,
+@@ -547,6 +582,10 @@ struct Stats {
+     living_fixed: u32,
+     terrain_sent: u32,
+     terrain_applied: u32,
++    research_sent: u32,
++    research_applied: u32,
++    fundings_sent: u32,
++    fundings_applied: u32,
+     last_host_cash: f32,
+     last_error: String,
+ }
+@@ -562,6 +601,9 @@ impl Session {
+             peer_ok: false,
+             last_snapshot: Instant::now(),
+             last_living: Instant::now(),
++            last_research: Instant::now(),
++            research_host_levels: Vec::new(),
++            research_pending: Vec::new(),
+             snapshot_seq: 0,
+             host: HostLedger::default(),
+             host_pause: HostLedger::default(),
+@@ -664,7 +706,7 @@ fn status() -> String {
+     with_session(|s| {
+         let cash = game_cash().map(|c| format!("{c:.2}")).unwrap_or_else(|| "none".into());
+         format!(
+-            "role={:?} connected={} world_ready={} in_game={} paused={} date={} cash={} host_cash={:.2} snapshots_sent={} snapshots_applied={} spends_sent={} spends_applied={} pauses_sent={} pauses_applied={} zoo_bytes={} pending={} local_cursor={} remote_cursor={} remote_screen={} cursors_sent={} cursors_drawn={} places_sent={} places_applied={} last_placed={} removes_sent={} removes_applied={} last_removed={} admission={} admissions_sent={} admissions_applied={} exhibits={} moves_sent={} moves_applied={} last_moved={} living={} living_sent={} living_applied={} living_fixed={} terrain_sent={} terrain_applied={} last_error={}",
++            "role={:?} connected={} world_ready={} in_game={} paused={} date={} cash={} host_cash={:.2} snapshots_sent={} snapshots_applied={} spends_sent={} spends_applied={} pauses_sent={} pauses_applied={} zoo_bytes={} pending={} local_cursor={} remote_cursor={} remote_screen={} cursors_sent={} cursors_drawn={} places_sent={} places_applied={} last_placed={} removes_sent={} removes_applied={} last_removed={} admission={} admissions_sent={} admissions_applied={} exhibits={} moves_sent={} moves_applied={} last_moved={} living={} living_sent={} living_applied={} living_fixed={} terrain_sent={} terrain_applied={} research={} research_sent={} research_applied={} fundings_sent={} fundings_applied={} last_error={}",
+             s.role,
+             s.peer_ok,
+             s.world_ready,
+@@ -705,6 +747,11 @@ fn status() -> String {
+             s.stats.living_fixed,
+             s.stats.terrain_sent,
+             s.stats.terrain_applied,
++            if in_game() { fmt_research() } else { "none".into() },
++            s.stats.research_sent,
++            s.stats.research_applied,
++            s.stats.fundings_sent,
++            s.stats.fundings_applied,
+             if s.stats.last_error.is_empty() { "-" } else { &s.stats.last_error }
+         )
+     })
+@@ -864,6 +911,14 @@ pub fn tick() {
+                 set_admission(price);
+                 s.stats.admissions_applied += 1;
+             }
++            NetEvent::Msg(Msg::Research(branches)) if s.role == Role::Client && s.world_ready && in_game() => {
++                apply_research(s, &branches);
++                s.stats.research_applied += 1;
++            }
++            NetEvent::Msg(Msg::ResearchFunding(id, level)) if s.role == Role::Host && in_game() => {
++                crate::ztresearch::coop_set_funding(id, level);
++                s.stats.fundings_applied += 1;
++            }
+             NetEvent::Msg(Msg::Terrain(tiles)) if (s.role == Role::Host || s.world_ready) && in_game() => {
+                 apply_terrain(&tiles);
+                 s.stats.terrain_applied += tiles.len() as u32;
+@@ -968,6 +1023,9 @@ pub fn tick() {
+     }
+     if ready && in_game() {
+         terrain_tick(s);
++        if s.role == Role::Client {
++            research_funding_tick(s);
++        }
+     }
+     let removed: Vec<Placement> = PENDING_REMOVED.lock().unwrap().drain(..).collect();
+     for pl in removed {
+@@ -1051,6 +1109,13 @@ fn host_tick(s: &mut Session) {
+             s.stats.living_sent += 1;
+         }
+     }
++    if s.last_research.elapsed() >= LIVING_INTERVAL && !mutant("no_research") {
++        s.last_research = Instant::now();
++        let branches = crate::ztresearch::coop_research_state().into_iter().map(|b| (b.id, b.funding_level, b.program, b.progress)).collect();
++        if s.send(Msg::Research(branches)) {
++            s.stats.research_sent += 1;
++        }
++    }
+ }
+ 
+ // --- player cursors -------------------------------------------------------------------------
+@@ -1494,6 +1559,52 @@ fn relocate(entity: u32, to: &Placement) -> Result<(), String> {
+     Ok(())
+ }
+ 
++// --- research ----------------------------------------------------------------------------------
++//
++// The host's research is the real one: once a second it sends each branch's funding level, selected
++// program (chosen at random when one finishes, so the copies would otherwise pick differently) and
++// that program's progress; the client sets the same (`ztresearch::coop_apply_research`). A funding
++// level the client's player changes is sent to the host, and the client keeps its own level for that
++// branch until a `Research` shows it (2 s at most).
++
++fn fmt_research() -> String {
++    let v: Vec<String> = crate::ztresearch::coop_research_state()
++        .iter()
++        .map(|b| format!("{}:{}:{}:{:.1}", b.id, b.funding_level, b.program, b.progress))
++        .collect();
++    if v.is_empty() { "none".into() } else { v.join(",") }
++}
++
++fn apply_research(s: &mut Session, branches: &[(i32, i32, i32, f32)]) {
++    s.research_pending.retain(|(id, level, t)| {
++        t.elapsed() < Duration::from_secs(2) && !branches.iter().any(|(b, l, _, _)| b == id && l == level)
++    });
++    let keep: Vec<i32> = s.research_pending.iter().map(|(id, _, _)| *id).collect();
++    let state: Vec<crate::ztresearch::CoopBranch> = branches
++        .iter()
++        .map(|&(id, funding_level, program, progress)| crate::ztresearch::CoopBranch { id, funding_level, program, progress })
++        .collect();
++    crate::ztresearch::coop_apply_research(&state, &keep);
++    s.research_host_levels = branches.iter().filter(|(id, ..)| !keep.contains(id)).map(|&(id, level, ..)| (id, level)).collect();
++}
++
++fn research_funding_tick(s: &mut Session) {
++    if s.research_host_levels.is_empty() {
++        return;
++    }
++    for b in crate::ztresearch::coop_research_state() {
++        let host = s.research_host_levels.iter().find(|(id, _)| *id == b.id).map(|(_, l)| *l);
++        let pending = s.research_pending.iter().any(|(id, level, _)| *id == b.id && *level == b.funding_level);
++        if host.is_some_and(|l| l != b.funding_level) && !pending && !mutant("no_research") {
++            if s.send(Msg::ResearchFunding(b.id, b.funding_level)) {
++                s.stats.fundings_sent += 1;
++                s.research_pending.retain(|(id, ..)| *id != b.id);
++                s.research_pending.push((b.id, b.funding_level, Instant::now()));
++            }
++        }
++    }
++}
++
+ // --- terrain -----------------------------------------------------------------------------------
+ //
+ // Painting ground and raising / lowering land change tile bytes +0x80..+0x84 (`BFTile`: +0x80 ground
+@@ -2126,6 +2237,18 @@ pub fn init() {
+         let v: Vec<String> = now.iter().enumerate().filter(|(i, t)| first.get(*i).is_some_and(|f| f != *t)).map(|(i, _)| i.to_string()).collect();
+         Ok(if v.is_empty() { "none".into() } else { v.join(",") })
+     });
++    lua_fn!("coop_test_funding", "ZooTogether lab: change research branch number n's funding level by delta (like the +/- buttons)",
++        "coop_test_funding(n, delta)", |n: usize, delta: i32| {
++            let mgr = globals().ztresearchmgr();
++            if n >= mgr.branch_count() {
++                return Ok("none".to_string());
++            }
++            let branch = mgr.branch_mut(n);
++            for _ in 0..delta.unsigned_abs() {
++                if delta > 0 { branch.increase_funding() } else { branch.decrease_funding() }
++            }
++            Ok(fmt_research())
++        });
+     lua_fn!("coop_place", "ZooTogether: build type/subtype at world x, y, z with rotation", "coop_place(type, subtype, x, y, z, rot)",
+         |t: String, sub: String, x: i32, y: i32, z: i32, rot: i32| {
+             let pl = Placement { zt_type: t, zt_sub_type: sub, pos: [x, y, z], rotation: rot };
+@@ -2185,6 +2308,9 @@ mod tests {
+         round_trip(Msg::Living(vec![]));
+         round_trip(Msg::Terrain(vec![(7, [1, 2, 3, 4, 5]), (65000, [0; 5])]));
+         round_trip(Msg::Terrain(vec![]));
++        round_trip(Msg::Research(vec![(5001, 2, 9100, 125.5), (5002, 0, -1, 0.0)]));
++        round_trip(Msg::Research(vec![]));
++        round_trip(Msg::ResearchFunding(5001, 3));
+         round_trip(Msg::Spend { seq: 9, amount: 250.0 });
+         round_trip(Msg::Pause { seq: 4, paused: false });
+         round_trip(Msg::ZooChunk { offset: 32, total: 40, data: vec![9; 8] });
+diff --git a/openzt/src/ztresearch.rs b/openzt/src/ztresearch.rs
+index 1bdacc0..5a78f2a 100644
+--- a/openzt/src/ztresearch.rs
++++ b/openzt/src/ztresearch.rs
+@@ -1548,6 +1548,62 @@ pub struct ZTResearchMgr {
+     branch_array: ZTArray<ZTResearchBranch>,  // 0x0c
+ }
+ 
++/// ZooTogether co-op: one research branch's shared state.
++#[cfg(feature = "coop")]
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub(crate) struct CoopBranch {
++    pub id: i32,
++    pub funding_level: i32,
++    /// Selected program id, or -1.
++    pub program: i32,
++    pub progress: f32,
++}
++
++/// ZooTogether co-op: every branch's funding level, selected program and its progress.
++#[cfg(feature = "coop")]
++pub(crate) fn coop_research_state() -> Vec<CoopBranch> {
++    let mgr = globals().ztresearchmgr();
++    mgr.branches()
++        .map(|b| CoopBranch {
++            id: b.id,
++            funding_level: b.current_funding_level,
++            program: b.current_program().map_or(-1, |p| p.id),
++            progress: b.current_program().map_or(0.0, |p| p.current_progress),
++        })
++        .collect()
++}
++
++/// ZooTogether co-op: make this copy's branches match `state` (funding levels except the branches in
++/// `keep_funding`, selected program and its category, progress).
++#[cfg(feature = "coop")]
++pub(crate) fn coop_apply_research(state: &[CoopBranch], keep_funding: &[i32]) {
++    let mgr = globals().ztresearchmgr();
++    for s in state {
++        let Some(branch) = mgr.branches_mut().find(|b| b.id == s.id) else { continue };
++        if !keep_funding.contains(&s.id) {
++            branch.current_funding_level = s.funding_level;
++        }
++        if s.program < 0 {
++            continue;
++        }
++        let found = branch.categories().find_map(|c| c.programs().find(|p| p.id == s.program).map(|p| (c, p)));
++        if let Some((category, program)) = found {
++            branch.current_category_ptr = category as *const ZTResearchCategory as u32;
++            branch.current_program_ptr = program as *const ZTResearchProgram as u32;
++            let program = unsafe { mut_from_memory::<ZTResearchProgram>(branch.current_program_ptr) };
++            program.current_progress = s.progress;
++        }
++    }
++}
++
++/// ZooTogether co-op: set one branch's funding level (the host applying a client's change).
++#[cfg(feature = "coop")]
++pub(crate) fn coop_set_funding(branch_id: i32, level: i32) {
++    if let Some(branch) = globals().ztresearchmgr().branches_mut().find(|b| b.id == branch_id) {
++        branch.current_funding_level = level;
++    }
++}
++
+ /// Pure prediction for `ZTResearchMgr::update`'s accumulator/day-count bookkeeping, per
+ /// `private/resources/decompiles/ZTResearchMgr_update.c`/`.asm`. `delta_ticks` is added to
+ /// `elapsed_ticks_before` using plain 32-bit wrapping arithmetic (confirmed by the `.c`/`.asm`'s
 -- 
 2.56.0.windows.3
 

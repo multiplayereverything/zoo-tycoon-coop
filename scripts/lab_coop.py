@@ -42,6 +42,9 @@ Checks, in order:
   path_c2h       the client drags a path (Construction panel, Paths tab); the host gets the same pieces
   terrain_c2h    the client raises ground (Modify Terrain tool, drag, then the tick button); both copies end
                  with the same terrain bytes (+0x80..+0x84 of every tile)
+  research_h2c   the host raises a research branch's funding; the client follows
+  research_c2h   the client raises another branch's funding; the host takes it
+  research_match every branch has the same selected program on both copies
   animal_c2h     the client adopts an African Elephant inside that exhibit; the host adds it
 
 --mutant nojoin      client never joins          -> zoo_transfer..client_spend must FAIL
@@ -56,6 +59,7 @@ Checks, in order:
 --mutant no_move     client never sends its moves -> move_c2h must FAIL
 --mutant no_living   host never sends its animals and staff -> living_* must FAIL
 --mutant no_terrain  client never sends its terrain edits -> terrain_c2h must FAIL
+--mutant no_research neither copy sends research -> research_h2c and research_c2h must FAIL
 
 build_drawn needs Pillow; the lab looks for it in private/pylib (pip install --target private/pylib pillow).
 
@@ -87,7 +91,7 @@ ALL_CHECKS = ["zoo_transfer", "layout", "cash_join", "host_change", "client_spen
               "host_pause", "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
               "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c", "hire_c2h",
               "admission_c2h", "admission_h2c", "move_c2h", "fire_c2h", "living_match", "living_birth", "living_death", "living_drift", "exhibit_c2h",
-              "exhibit_h2c", "path_c2h", "terrain_c2h", "animal_c2h"]
+              "exhibit_h2c", "path_c2h", "terrain_c2h", "research_h2c", "research_c2h", "research_match", "animal_c2h"]
 CURSOR_CHECKS = {"cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn"}
 EXPECTED_FAIL = {
     None: set(),
@@ -95,7 +99,8 @@ EXPECTED_FAIL = {
                "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
                "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c", "hire_c2h",
                "admission_c2h", "admission_h2c", "move_c2h", "fire_c2h", "living_match", "living_birth", "living_death",
-               "living_drift", "exhibit_c2h", "exhibit_h2c", "path_c2h", "terrain_c2h", "animal_c2h"},
+               "living_drift", "exhibit_c2h", "exhibit_h2c", "path_c2h", "terrain_c2h", "research_h2c",
+               "research_c2h", "research_match", "animal_c2h"},
     "drop_spend": {"client_spend"},
     "no_date": {"date"},
     "no_cursor": {"cursor_c2h", "cursor_drawn"},
@@ -109,6 +114,8 @@ EXPECTED_FAIL = {
     # living_match is not in here: without Living the copies can still happen to agree.
     "no_living": {"living_birth", "living_death", "living_drift"},
     "no_terrain": {"terrain_c2h"},
+    # research_match is not in here: both copies load the same save and may keep the same programs.
+    "no_research": {"research_h2c", "research_c2h"},
 }
 # Buy menu: the Buildings button, then a free grass pixel; the first item (Snack Machine) is selected.
 BUILDINGS_BUTTON = (25, 125)
@@ -219,10 +226,10 @@ def run(args, results):
     pids = results["pids"]
     base_env = {"OPENZT_NO_CONSOLE": "1", "ZT_LAB_FAKE_MOUSE": "1"}
     client_env = dict(base_env)
-    if args.mutant in ("no_date", "no_cursor", "no_place", "no_remove", "no_admission", "no_move", "no_terrain"):
+    if args.mutant in ("no_date", "no_cursor", "no_place", "no_remove", "no_admission", "no_move", "no_terrain", "no_research"):
         client_env["ZT_COOP_MUTANT"] = args.mutant
     host_env = dict(base_env)
-    if args.mutant in ("drop_spend", "no_living"):
+    if args.mutant in ("drop_spend", "no_living", "no_research"):
         host_env["ZT_COOP_MUTANT"] = args.mutant
 
     pids.append(zt_launch.launch(HOST_DIR, host_env))
@@ -429,7 +436,7 @@ def run(args, results):
     if not checks["zoo_transfer"]:
         # The client never entered the zoo (nojoin): the in-zoo steps below would click its menu.
         for k in ("move_c2h", "fire_c2h", "living_match", "living_birth", "living_death", "living_drift", "exhibit_c2h", "exhibit_h2c",
-                  "path_c2h", "terrain_c2h", "animal_c2h"):
+                  "path_c2h", "terrain_c2h", "research_h2c", "research_c2h", "research_match", "animal_c2h"):
             checks[k] = False
         return
 
@@ -594,6 +601,32 @@ def run(args, results):
     checks["path_c2h"] = bool(added)
     results["path"] = {"client_added": sorted(client_added)[:6], "client_added_count": len(client_added)}
 
+    # Research: funding levels both ways, and the same selected programs.
+    def research(addr):  # {branch id: (funding level, program id)}
+        out = {}
+        for item in status(addr).get("research", "none").split(","):
+            parts = item.split(":")
+            if len(parts) == 4:
+                out[parts[0]] = (parts[1], parts[2])
+        return out
+
+    r0 = research(HOST_CONSOLE)
+    branches = sorted(r0)
+    if len(branches) >= 2:
+        lua(HOST_CONSOLE, "return coop_test_funding(0, 1)")
+        h_level = research(HOST_CONSOLE)[branches[0]][0]
+        checks["research_h2c"] = bool(wait_until(lambda: research(CLIENT_CONSOLE).get(branches[0], ("?",))[0] == h_level, 3))
+        lua(CLIENT_CONSOLE, "return coop_test_funding(1, 1)")
+        c_level = research(CLIENT_CONSOLE)[branches[1]][0]
+        checks["research_c2h"] = bool(wait_until(lambda: research(HOST_CONSOLE).get(branches[1], ("?",))[0] == c_level, 3)
+                                      and research(CLIENT_CONSOLE)[branches[1]][0] == c_level)
+        time.sleep(1.5)
+        h, c = research(HOST_CONSOLE), research(CLIENT_CONSOLE)
+        checks["research_match"] = bool(h and all(h[b][1] == c.get(b, ("", ""))[1] for b in h))
+    else:
+        checks["research_h2c"] = checks["research_c2h"] = checks["research_match"] = False
+    results["research"] = {"before": r0, "host": research(HOST_CONSOLE), "client": research(CLIENT_CONSOLE)}
+
     # Animal: adopt one inside the exhibit.
     applied0 = int(status(HOST_CONSOLE).get("places_applied", 0))
     placed0 = status(CLIENT_CONSOLE).get("last_placed")
@@ -613,7 +646,7 @@ def run(args, results):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mutant", choices=["nojoin", "drop_spend", "no_date", "no_cursor", "no_place", "no_remove", "no_admission", "no_move", "no_living", "no_terrain"], default=None)
+    ap.add_argument("--mutant", choices=["nojoin", "drop_spend", "no_date", "no_cursor", "no_place", "no_remove", "no_admission", "no_move", "no_living", "no_terrain", "no_research"], default=None)
     ap.add_argument("--keep", action="store_true", help="leave the copies running")
     ap.add_argument("--shots", action="store_true", help="save window captures (needs Pillow)")
     args = ap.parse_args()

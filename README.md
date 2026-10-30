@@ -2,14 +2,14 @@
 
 Co-op for **Zoo Tycoon (2001)**: one player hosts a zoo, a friend joins by IP and gets the same zoo, budget, date and pause, and each player sees the other's cursor.
 
-**Status: 0.10.0-dev, early prototype.** When a friend joins, they receive the host's zoo. After that
+**Status: 0.11.0-dev, early prototype.** When a friend joins, they receive the host's zoo. After that
 the budget (purchases on either side come out of the host's money), the date, pause and admission price
 stay shared, each player's map cursor shows on the other's screen, and objects either player builds or
 sells, exhibits either player fences in, animals either player adopts and staff either player hires
 show up on both copies, a keeper or animal picked up and dropped moves on both, and firing staff or
 selling an animal removes it on both. The host's animals and staff (where they are, births and
-deaths) are mirrored on the client once a second, and terrain edits sync both ways; guests are not
-synced. What animals,
+deaths) are mirrored on the client once a second, terrain edits sync both ways, and research
+follows the host; guests are not synced. What animals,
 guests and staff do by themselves is simulated by each copy on its own, and research is not synced
 yet. See [handoff.md](handoff.md) for the plan, what is proven and what isn't.
 
@@ -56,10 +56,10 @@ Or use openzt's Lua console (`127.0.0.1:8080`): `coop_host()`, `coop_join("ip")`
 them side by side, hidden, and writes a summary table: the client joins and receives the zoo; budget,
 date and pause are checked both ways; each player's cursor must reach and be drawn on the other side;
 each player buys a snack machine with real (posted) clicks and sells it, and both copies must end with
-the same layout; the client hires a keeper, moves it and fires it, each side fences in an exhibit, the client lays a path and raises ground, the client
+the same layout; the client hires a keeper, moves it and fires it, each side fences in an exhibit, the client lays a path and raises ground, research funding is changed from each side, the client
 adopts an elephant, and the admission price is set from each side. Each mutant
 (`nojoin`, `drop_spend`, `no_date`, `no_cursor`, `no_place`, `no_remove`, `no_admission`, `no_move`,
-`no_living`, `no_terrain`)
+`no_living`, `no_terrain`, `no_research`)
 breaks one feature on purpose and the lab must catch it.
 
 ## Credits and license

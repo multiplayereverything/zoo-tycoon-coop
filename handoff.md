@@ -5,8 +5,9 @@ staff, the admission price, building exhibits (fences, with their gate) and adop
 two-copy lab** (see "Lab"), and picking up and dropping staff or animals moves them on both copies.
 Firing staff and selling animals sync too, and the host's animals and staff (where they are,
 births, deaths, escapes) are mirrored on the client once a second. Terrain edits (raising/lowering
-land, ground type) sync both ways. Version 0.10.0-dev (protocol 9). Not synced: guests (decoration on
-the client), animal needs/happiness, research, awards.
+land, ground type) sync both ways, and research (funding levels, selected programs, progress)
+follows the host. Version 0.11.0-dev (protocol 10). Not synced: guests (decoration on the client),
+animal needs/happiness, awards.
 How to work on this repo: [AGENTS.md](AGENTS.md) (Karpathy guidelines + project rules). Repo: https://github.com/multiplayereverything/zoo-tycoon-coop (no
 release yet). Built on [openzt](https://github.com/openzt1/openzt) (by the openzt authors; LICENSE file
 GPL-3.0, Cargo metadata MIT/Apache-2.0, so this repo is GPL-3.0), a Rust DLL that the game loads as
@@ -23,7 +24,7 @@ Zoo Tycoon\ZooTogether\          this repo (the game never scans it)
   scripts\setup-lab.ps1          makes private\lab-host + private\lab-client (hardlinked copies)
   scripts\zt_launch.py           starts a copy suspended, lifts the one-instance check, parks it
                                  off-screen, captures its window (PrintWindow, needs Pillow)
-  scripts\lab_coop.py            the two-copy co-op lab, 32 checks (+ 10 mutants)
+  scripts\lab_coop.py            the two-copy co-op lab, 35 checks (+ 11 mutants)
   scripts\lab_all.py             runs lab_coop normally and once per mutant, writes a summary table
   scripts\get-openzt.ps1         clones openzt at df01b96 and applies the patch into vendor\openzt
   patches\openzt-zoo-together.patch   our changes to openzt, as patches on upstream df01b96
@@ -119,7 +120,8 @@ Phases:
 8. **Moving staff and animals** (done, protocol 7): see "Building sync".
 9. **Animals and staff follow the host** (done, protocol 8): see "Living state".
 10. **Terrain** (done, protocol 9): see "Terrain".
-11. Guests, animal needs, research, awards (interest-managed, low rate), exhibits, research, awards. Until then
+11. **Research** (done, protocol 10): see "Research".
+12. Guests, animal needs, awards (interest-managed, low rate), exhibits, research, awards. Until then
    each copy simulates guests and animals on its own from the join snapshot on.
 
 ## Networking
@@ -132,7 +134,9 @@ Phases:
   State{seq,cash,acked_spend,acked_pause,paused,date[16],admission}, Spend{seq,amount},
   Pause{seq,paused}, ZooChunk{offset,total,data}, ZooLoaded{ok}, Cursor{visible,x,y,z},
   Placed/Removed{x,y,z,rotation,zt_type,zt_sub_type}, Admission{price}, Moved{from, to} (two
-  placements), Living{count u16, placements}, Terrain{count u16, (tile u32, bytes[5])...}, Keepalive (writer thread, 1 s; read timeout 30 s, per
+  placements), Living{count u16, placements}, Terrain{count u16, (tile u32, bytes[5])...},
+  Research{count u16, (branch id, funding level, program id, progress f32)...}, ResearchFunding{branch
+  id, level}, Keepalive (writer thread, 1 s; read timeout 30 s, per
   Baldi's link-health lesson). A protocol mismatch shows in `coop_status()` and nothing is applied.
 
 ## Building sync (protocol 4-5, 2026-10-30)
@@ -243,6 +247,20 @@ receiving copy draws the new slope correctly (captures of these windows can be s
 graphics pointers can't be compared across processes); ground painting is the same bytes but is not
 tested on its own; a terraform the player cancels sends its preview and then the restore.
 
+## Research (protocol 10, 2026-10-30)
+
+openzt's `ztresearch.rs` ports `ZTResearchMgr`/`Branch`/`Program` (branch: selected category `+0x30`,
+selected program `+0x34`, funding level `+0x44`; program: id `+0x30`, progress `+0x38`). Coop adds
+`coop_research_state` / `coop_apply_research` / `coop_set_funding` there. Once a second the host sends
+every branch (id, funding level, selected program id, progress); the client sets the same, including
+the selected program and its category (a branch picks its next program at random, so the copies
+would otherwise diverge). A funding level the client's player changes is sent as
+`ResearchFunding(branch, level)`; the host applies it, and the client keeps its own level for that
+branch until a `Research` shows it (2 s at most). Completion effects (unlocks) run on each copy when
+the program's progress reaches its cost; with the progress synced they come within a second of each
+other. Not tested: a program completing in the lab (research advances over long game time); the
+funding buttons themselves (the lab uses the same `increase_funding` openzt's port provides).
+
 ## Our changes to openzt (branch `zoo-together`)
 
 - `openzt/src/coop.rs` (new, feature `coop`): session, wire format, ledgers, pause sync, zoo transfer,
@@ -306,7 +324,18 @@ it). The script handles both. Output: `vendor\openzt\target\i686-pc-windows-msvc
   turns it on) did not work with posted clicks; it seems to pick the object under the *real* mouse,
   not checked. The lab sells through the game's sell path from Lua instead (`coop_test_sell`).
 
-### Results, terrain (2026-10-30 14:30-, private\lab-results\*-summary.md)
+### Results, research (2026-10-30 15:16-, private\lab-results\*-summary.md)
+
+New checks `research_h2c` (host raises branch 0's funding 1 -> 2, the client follows), `research_c2h`
+(client raises branch 1's, the host takes it) and `research_match` (same selected program in every
+branch); mutant `no_research` (neither copy sends). Normal 15:16 35/35 (branches 23050/23051, programs
+23399/23303 on both), `no_research` 15:20 caught (only the two funding checks fail). Full suite
+15:23-16:01 (`20261030-160125-summary.md`): one normal run 35/35, the other failed only `date` (the
+host's own clock didn't move in the 4 s window, 19:35 both times; the client followed the 30-day jump);
+all 11 mutants caught. Rerun 16:04-16:10 (`20261030-161039-summary.md`): both normal runs 35/35. The
+date stall is new and not explained; watch for it.
+
+### Results, terrain (2026-10-30 14:28-15:07)
 
 New check `terrain_c2h` and mutant `no_terrain`. Normal 14:28 32/32 (client and host terrain hash
 `9a623069c12dce00`), `no_terrain` 14:30 caught. Full suite 14:41-15:07
