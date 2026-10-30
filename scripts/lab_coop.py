@@ -21,12 +21,17 @@ Checks, in order:
                  both copies' layouts match again
   build_drawn    the host's screen changes where the client built (window capture before/after)
   build_h2c      the host buys one with real clicks; the client builds it and the layouts match
+  remove_c2h     the client sells its snack machine (the game's sell path, sell dialog skipped); the
+                 host removes it too and the layouts match
+  remove_h2c     the host sells its snack machine; the client removes it; both are back to the map's
+                 original layout
 
 --mutant nojoin      client never joins          -> zoo_transfer..client_spend must FAIL
 --mutant drop_spend  host ignores client spends  -> client_spend must FAIL, the rest pass
 --mutant no_date     client ignores host date    -> date must FAIL
 --mutant no_cursor   client never sends its cursor -> cursor_c2h and cursor_drawn must FAIL
---mutant no_place    client never sends its builds -> build_c2h and build_drawn must FAIL
+--mutant no_place    client never sends its builds -> build_c2h, build_drawn (and so remove_c2h) must FAIL
+--mutant no_remove   client never sends its removals -> remove_c2h must FAIL
 
 build_drawn needs Pillow; the lab looks for it in private/pylib (pip install --target private/pylib pillow).
 
@@ -56,17 +61,18 @@ MAP = "maps\\default.zoo"
 
 ALL_CHECKS = ["zoo_transfer", "layout", "cash_join", "host_change", "client_spend", "no_double", "date",
               "host_pause", "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
-              "build_c2h", "build_drawn", "build_h2c"]
+              "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c"]
 CURSOR_CHECKS = {"cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn"}
 EXPECTED_FAIL = {
     None: set(),
     "nojoin": {"zoo_transfer", "layout", "cash_join", "host_change", "client_spend", "date", "host_pause",
                "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
-               "build_c2h", "build_drawn", "build_h2c"},
+               "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c"},
     "drop_spend": {"client_spend"},
     "no_date": {"date"},
     "no_cursor": {"cursor_c2h", "cursor_drawn"},
-    "no_place": {"build_c2h", "build_drawn"},
+    "no_place": {"build_c2h", "build_drawn", "remove_c2h"},  # the host never had the client's build to remove
+    "no_remove": {"remove_c2h"},
 }
 # Buy menu: the Buildings button, then a free grass pixel; the first item (Snack Machine) is selected.
 BUILDINGS_BUTTON = (25, 125)
@@ -136,7 +142,7 @@ def run(args, results):
     pids = results["pids"]
     base_env = {"OPENZT_NO_CONSOLE": "1"}
     client_env = dict(base_env)
-    if args.mutant in ("no_date", "no_cursor", "no_place"):
+    if args.mutant in ("no_date", "no_cursor", "no_place", "no_remove"):
         client_env["ZT_COOP_MUTANT"] = args.mutant
     host_env = dict(base_env)
     if args.mutant == "drop_spend":
@@ -286,13 +292,39 @@ def run(args, results):
                                and (layouts[8181] == layouts[8182] or not checks["build_c2h"]))
     results["build"].update(host_placed=h_placed, host_layout_2=layouts[8181], client_layout_2=layouts[8182])
 
+    # Removal: each side sells the machine it built.
+    def sell(addr, placed):
+        m = re.match(r"(\w+)/(\w+)@(-?\d+),(-?\d+),(-?\d+)", placed or "")
+        return lua(addr, f'return coop_test_sell("{m[1]}", "{m[2]}", {m[3]}, {m[4]}, {m[5]})') if m else "nothing"
+
+    applied0 = int(status(HOST_CONSOLE).get("removes_applied", 0))
+    results["remove"] = {"client_sell": sell(CLIENT_CONSOLE, c_placed)}
+    got = wait_until(lambda: int(status(HOST_CONSOLE).get("removes_applied", 0)) > applied0, 3)
+    time.sleep(0.5)
+    layouts = {a[1]: lua(a, "return coop_layout()") for a in (HOST_CONSOLE, CLIENT_CONSOLE)}
+    c_removed = status(CLIENT_CONSOLE).get("last_removed")
+    checks["remove_c2h"] = bool(c_removed == c_placed and got and layouts[8181] == layouts[8182])
+    results["remove"].update(client_removed=c_removed, host_layout=layouts[8181], client_layout=layouts[8182])
+
+    applied0 = int(status(CLIENT_CONSOLE).get("removes_applied", 0))
+    client_count0 = count(layouts[8182])
+    results["remove"]["host_sell"] = sell(HOST_CONSOLE, h_placed)
+    got = wait_until(lambda: int(status(CLIENT_CONSOLE).get("removes_applied", 0)) > applied0, 3)
+    time.sleep(0.5)
+    layouts = {a[1]: lua(a, "return coop_layout()") for a in (HOST_CONSOLE, CLIENT_CONSOLE)}
+    h_removed = status(HOST_CONSOLE).get("last_removed")
+    original = results["layout"][8181]
+    checks["remove_h2c"] = bool(h_removed == h_placed and got and count(layouts[8182]) == client_count0 - 1
+                                and (layouts[8182] == original or not checks["remove_c2h"]))
+    results["remove"].update(host_removed=h_removed, host_layout_2=layouts[8181], client_layout_2=layouts[8182])
+
     results["status"] = {"host": lua(HOST_CONSOLE, "return coop_status()"),
                          "client": lua(CLIENT_CONSOLE, "return coop_status()")}
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mutant", choices=["nojoin", "drop_spend", "no_date", "no_cursor", "no_place"], default=None)
+    ap.add_argument("--mutant", choices=["nojoin", "drop_spend", "no_date", "no_cursor", "no_place", "no_remove"], default=None)
     ap.add_argument("--keep", action="store_true", help="leave the copies running")
     ap.add_argument("--shots", action="store_true", help="save window captures (needs Pillow)")
     args = ap.parse_args()

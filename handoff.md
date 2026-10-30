@@ -1,7 +1,8 @@
 # ZooTogether — Zoo Tycoon (2001) co-op: plan and hand-off
 
-Status: **join-in-progress, budget, date, pause and player cursors work in a two-copy lab** (see
-"Lab"), version 0.3.0-dev (protocol 3). Building after join is **not** synced yet (see "Building sync").
+Status: **join-in-progress, budget, date, pause, player cursors, and building / selling objects work
+in a two-copy lab** (see "Lab"), version 0.4.0-dev (protocol 5). Animals, staff, guests, exhibits and
+research are not synced yet.
 How to work on this repo: [AGENTS.md](AGENTS.md) (Karpathy guidelines + project rules). Repo: https://github.com/multiplayereverything/zoo-tycoon-coop (no
 release yet). Built on [openzt](https://github.com/openzt1/openzt) (by the openzt authors; LICENSE file
 GPL-3.0, Cargo metadata MIT/Apache-2.0, so this repo is GPL-3.0), a Rust DLL that the game loads as
@@ -18,7 +19,8 @@ Zoo Tycoon\ZooTogether\          this repo (the game never scans it)
   scripts\setup-lab.ps1          makes private\lab-host + private\lab-client (hardlinked copies)
   scripts\zt_launch.py           starts a copy suspended, lifts the one-instance check, parks it
                                  off-screen, captures its window (PrintWindow, needs Pillow)
-  scripts\lab_coop.py            the two-copy co-op lab, 13 checks (+ 4 mutants)
+  scripts\lab_coop.py            the two-copy co-op lab, 18 checks (+ 6 mutants)
+  scripts\lab_all.py             runs lab_coop normally and once per mutant, writes a summary table
   scripts\get-openzt.ps1         clones openzt at df01b96 and applies the patch into vendor\openzt
   patches\openzt-zoo-together.patch   our changes to openzt, as patches on upstream df01b96
   vendor\openzt\                 openzt checkout, branch zoo-together (its own git repo, ignored here)
@@ -60,9 +62,8 @@ Has (and we reuse):
 Missing for multiplayer (what we add):
 - Networking of any kind (added: `coop.rs`).
 - Entering a zoo and saving one from code (added: `load_zoo`, `save_zoo_bytes`).
-- A clean "entity placed / removed" event and a way to place an entity of a given type at a tile
-  from code. openzt can *list* entities but has no create-by-type API yet. This is the next big RE job
-  (see "Building sync: research").
+- A clean "entity placed / removed" event and a way to place or remove an entity of a given type
+  from code (added, see "Building sync").
 - Determinism: the sim uses its own RNG and timing; we will not try lockstep (see authority model).
 - In-game UI for host/join (today: env vars or console commands).
 - openzt is still WIP upstream, so we pin to upstream df01b96 and rebase deliberately.
@@ -100,7 +101,7 @@ Phases:
    `videomgr+0x20` (`IDirectDrawSurface`; `GetDC` slot 17, `ReleaseDC` slot 26); windowed mode Blts it
    to the primary, fullscreen Flips. The local mouse comes from `GetCursorPos` + `ScreenToClient` on the
    game thread's window.
-5. **Building** (next, in progress): see "Building sync".
+5. **Building and selling** (done): see "Building sync".
 6. Animals/staff/guests positions (interest-managed, low rate), exhibits, research, awards. Until then
    each copy simulates guests and animals on its own from the join snapshot on.
 
@@ -110,71 +111,61 @@ Phases:
   client: `coop_join("ip[:port]")`, or set `ZT_COOP_HOST=<port>` / `ZT_COOP_JOIN=<ip[:port]>` before
   launching. Over the internet the host must forward TCP 27150, or both use a VPN (Tailscale/ZeroTier).
 - Next: global mod relay (tunnel mode) so friends can join by room code without port forwarding.
-- Frames: `u32 len | u8 type | payload` (max 64 KB), protocol 3: Hello{protocol,role},
+- Frames: `u32 len | u8 type | payload` (max 64 KB), protocol 5: Hello{protocol,role},
   State{seq,cash,acked_spend,acked_pause,paused,date[16]}, Spend{seq,amount}, Pause{seq,paused},
-  ZooChunk{offset,total,data}, ZooLoaded{ok}, Cursor{visible,x,y,z}, Keepalive (writer thread, 1 s; read timeout 30 s, per
+  ZooChunk{offset,total,data}, ZooLoaded{ok}, Cursor{visible,x,y,z},
+  Placed/Removed{x,y,z,rotation,zt_type,zt_sub_type}, Keepalive (writer thread, 1 s; read timeout 30 s, per
   Baldi's link-health lesson). A protocol mismatch shows in `coop_status()` and nothing is applied.
 
-## Building sync (2026-10-30: research only, not implemented)
+## Building sync (protocol 4-5, 2026-10-30)
 
-What is known for sure:
-- Every entity *type* class has `CREATE_ENTITY` at **vtable slot 0x5C** (scenery 0x6303f4+0x5c →
-  0x412977, building 0x6307e4+0x5c → 0x45134e, path 0x63049c+0x5c → 0x451b8a, fence 0x63034c+0x5c →
-  0x5b3a55; type vtables from openzt's `ztmapview.rs` notes).
-- `ZTMapView::placeEntityOnMap` (`PLACE_ENTITY_ON_MAP_1` 0x4d9088) is the drop of an entity the player
-  is *carrying* (picked up / moved, from `mode+0x10`), with a refund branch (`REFUND_CONSTRUCTION`,
-  `ADD_CASH`). It is called from the left-button-up handler (0x4d871e), 0x487da6 and undo (0x4de6cc).
-- `ZTMapView::setTempEntity` (0x4f189a, 35 callers) receives an **already created** entity; the buy
-  menu creates it somewhere earlier.
+Objects are named on the wire by their type's `zt_type`/`zt_sub_type` strings (type `+0x98`/`+0xa4`,
+e.g. `building/vendfood`) plus world position (entity `+0x114`, x/y/z) and rotation (`+0x12c`). Both
+copies loaded the same save, so the same strings name the same type, and type + position finds the same
+object. Each side sends what its player did; the other side replays it. Both sides send (a purchase is
+already paid through the shared budget; the host replays the client's builds at no cost).
 
-What didn't work: searching for `call [reg+0x5c]` before `setTempEntity` finds nothing, and the many
-`+0x5c` calls inside `UNDO_LAST_ACTION_1` are on *entities*, not types, so slot numbers alone can't find
-the purchase path statically.
-
-Next step (concrete): trace a real purchase live. Detour the five type `CREATE_ENTITY` functions (log
-`this` = type, args, return, and the caller's return address), then make one purchase in a lab copy
-(or have the user click once). That names the buy path's create → position → `setTempEntity` → place
-sequence, which gives both the client hook (a purchase completed: type, tile, rotation) and the host
-primitive (`coop_place(type, x, y, rot)` on the same path). Removal: `REMOVE_ENTITY_FROM_MAP` 0x50a0b0 /
-`REMOVE_ENTITY` 0x50a432. The lab check is ready-made: `coop_layout()` must match on both copies after
-a place and after a remove, with a `drop_place` mutant.
-
-Earlier candidate list:
-
-Candidate hooks from openzt's generated table (zoo.exe VAs):
-- `ztmapview::PLACE_ENTITY_ON_MAP_1` 0x4d9088, `thiscall(mapview, entity, f32, rotation) -> *i32`.
-  openzt's `roofs.rs` **already detours it** (it gets the freshly placed entity), so our hook must be a
-  call from inside that detour, not a second detour on the same address.
-- `ztmapview::SET_TEMP_ENTITY` 0x4f189a (the object on the cursor before it's placed),
-  `REMOVE_ENTITY_FROM_MAP` 0x50a0b0, `REMOVE_ENTITY` 0x50a432, `REMOVE_SELECTED_ENTITY` 0x48d065,
-  `PICK_UP_SELECTED_ENTITY` 0x46ab75, `SET_BULLDOZER` 0x5096e8, `COMMIT_TERRAFORM` 0x4da19c, and
-  `ADD_UNDO_ACTION` (undo implies a record of every build action; worth reading first).
-- Creating entities from code: per-type `CREATE_ENTITY` (`ztscenerytype` 0x412977, `ztbuildingtype`
-  0x45134e, `ztfencetype` 0x5b3a55, `ztpathtype` 0x451b8a, `ztanimaltype` 0x453d41, ...),
-  `bfworldmgr::ADD_ENTITY` 0x410556, `bfmap::ADD_ENTITY` 0x4f3e7d.
-- Habitats: `zthabitatmgr::PLACE_GATE` / `REPLACE_FENCE_WITH_GATE`.
-
-Plan: client hooks place/remove → `Place{seq, type codename, tile x/y, rotation}` / `Remove{seq, host
-entity id}` intents; host creates the entity with the type's `CREATE_ENTITY` + `placeEntityOnMap` and
-broadcasts `EntityAdded{id, type, x, y, rot}` / `EntityRemoved{id}`; the client applies those and keeps a
-host-id ↔ local-pointer map seeded at join (both copies load the same save, so entity order matches).
-To confirm first: what `PLACE_ENTITY_ON_MAP_1`'s f32 is, how to name a type on the wire (openzt's
-`bfentitytype.rs` has codenames), fences (snake drags) and paths. The lab needs a Lua "place this type
-here" helper on the same create+place path, since it can't click.
+- **Place.** A purchase puts a created entity on the cursor (`ZTMapView::setTempEntity` 0x4f189a) and
+  the map click calls `ZTMapView::placeEntityOnMap(entity, cost, 0)` (0x4d9088, from the
+  left-button-up handler 0x4d871e), which returns the placed entity. openzt's `roofs.rs` already
+  detours it, so coop is called from inside that detour (`on_entity_placed`). Replay (`place_entity`):
+  `BFEntityType::create(type, false)` (0x412669; openzt calls it `bfoverlaytype::CREATE`), write the
+  rotation, `BFEntity::setWorldPos`, **`BFEntity::snapToGrid` (0x505763)**, then `placeEntityOnMap` with
+  cost 0. Without `snapToGrid` the entity is in the world list but never drawn: it fills the screen
+  position at `+0xb4/+0xb8`, which the buy cursor does while the player moves the object (found by
+  diffing a UI-placed and a code-placed entity).
+- **Remove.** Selling and bulldozing end in `ZTMapView::removeEntityFromMap(entity, refund, ...)`
+  (0x50a0b0; callers `removeEntity` 0x50a432, which the sell path `removeSelectedEntity` 0x48d065 uses,
+  plus 0x485b41 and 0x4efd12). Coop detours it (`removal_detours`), takes the object's description
+  before the call, and sends it only if the object is really gone afterwards. Selling a building asks
+  "are you sure?" inside that call (0x50bf8d → `BFUIMgr` confirm dialog 0x4fff2c, which runs nested
+  game frames until answered; the player may say no). It only asks when the map view's byte `+0x456`
+  is set, so the replay (`remove_entity` → `removeEntity`) clears that byte for the call and the other
+  player gets no dialog. The replaying copy refunds itself; on the client that refund is overwritten by
+  the host's budget, so only the host's refund counts.
+- **Nested frames.** That dialog's nested frames re-enter openzt's per-frame hook. The console's
+  `call_next_command` and `coop::tick` now `try_lock` their mutex and skip a re-entered frame instead of
+  deadlocking (found with a stack sample of the hung copy).
+- Only placed, non-moving objects are synced (the `coop_layout` set: buildings, scenery, fences,
+  paths, tank walls/filters). Animals, guests and staff are not.
 
 ## Our changes to openzt (branch `zoo-together`)
 
 - `openzt/src/coop.rs` (new, feature `coop`): session, wire format, ledgers, pause sync, zoo transfer,
   save-dialog detour, cursor sync + `GXVideoManager::flip` detour that draws the other player's cursor,
-  Lua commands (`coop_host/join/stop/status/cash/layout/load_zoo`, lab helpers `coop_test_spend`,
-  `coop_set_pause`, `coop_test_shift_date`, `coop_test_cursor`, `coop_world_to_screen`), 8 unit tests.
+  building sync (place replay, `removeEntityFromMap` detour, remove replay), Lua commands
+  (`coop_host/join/stop/status/cash/layout/load_zoo/place/remove`, lab helpers `coop_test_spend`,
+  `coop_set_pause`, `coop_test_shift_date`, `coop_test_cursor`, `coop_world_to_screen`,
+  `coop_test_sell`), 8 unit tests.
   user32/gdi32 calls are declared locally so openzt's `windows` crate features stay untouched.
 - `ztgamemgr.rs`: `set_cash_and_refresh`, `is_started`, `coop_date_bytes`/`coop_set_date_bytes`; the
   vanilla `subtractCash` detour reports spends to coop.
 - `ztworldmgr.rs`: `static_layout_fingerprint()` (count + hash of buildings, scenery, fences, paths,
-  tank walls/filters by class, type name and position).
+  tank walls/filters by class, type name and position), `coop_static_entities()`, `coop_entity_types()`.
+- `roofs.rs`: its `PLACE_ENTITY_ON_MAP_1` detour calls `coop::on_entity_placed` with the placed entity.
 - `command_console.rs`: `coop::tick()` each frame in the existing `ZTApp::updateSim` detour;
-  per-request reply channel and FIFO queue (fixes the busy-spin/stolen-reply bug).
+  per-request reply channel and FIFO queue (fixes the busy-spin/stolen-reply bug); `call_next_command`
+  uses `try_lock` so nested game frames (modal dialogs) don't deadlock it.
 - `logging.rs`: `OPENZT_NO_CONSOLE=1` skips `AllocConsole` (hidden lab copies).
 - Cargo features: `coop` in `openzt` and `openzt-dll`.
 
@@ -188,9 +179,11 @@ it). The script handles both. Output: `vendor\openzt\target\i686-pc-windows-msvc
 
 ## Lab
 
-- `scripts\setup-lab.ps1` then `python scripts\lab_coop.py` (and `--mutant nojoin`,
-  `--mutant drop_spend`, `--mutant no_date`, `--mutant no_cursor`; `--shots` saves window captures and
-  needs Pillow importable by the lab's Python). Copies run
+- `scripts\setup-lab.ps1`, then `python scripts\lab_all.py` runs everything (normal runs plus each
+  mutant: `nojoin`, `drop_spend`, `no_date`, `no_cursor`, `no_place`, `no_remove`) one copy pair at a
+  time and writes `private\lab-results\<time>-summary.md`. `python scripts\lab_coop.py [--mutant X]
+  [--shots] [--keep]` runs one. Window captures and `build_drawn` need Pillow in `private\pylib`
+  (`pip install --target private\pylib pillow`). Copies run
   below-normal priority, windowed 800x600 (the game's minimum mode; 640x360 isn't available), no intro
   movies, no openzt console window, **parked off-screen at (-4000,-4000) without focus, not
   minimized**: a minimized Zoo Tycoon window stops its whole game loop (no `updateSim`, so the console
@@ -198,6 +191,36 @@ it). The script handles both. Output: `vendor\openzt\target\i686-pc-windows-msvc
 - **One instance check**: zoo.exe's function at 0x5337e6 does `FindWindowA(appClass)` and refuses to
   start if another Zoo Tycoon window exists. `zt_launch.py` starts the copy suspended and patches that
   function to `xor eax,eax; ret` in memory only. Real players run one copy per PC and don't need it.
+
+- **Clicks**: `zt_launch.click` posts mouse messages to the parked window. Zoo Tycoon ignores the
+  mouse while it thinks another app is active (with two copies, the one started last is), so `click`
+  first posts `WM_ACTIVATEAPP`/`WM_ACTIVATE`. Buying works this way (Buildings button at (25,125), the
+  first item is the $50 Snack Machine, then a map click). Selling through the bulldozer (the Delete key
+  turns it on) did not work with posted clicks; it seems to pick the object under the *real* mouse,
+  not checked. The lab sells through the game's sell path from Lua instead (`coop_test_sell`).
+
+### Results, protocol 5 (2026-10-30 06:51-07:01, private\lab-results\*-summary.md)
+
+New checks: the client buys a snack machine with posted clicks and the host builds it, with both
+`coop_layout` hashes equal (`build_c2h`); the host's screen changes where it was built (`build_drawn`,
+1166 pixels in an 80x80 box); the host buys one and the client builds it (`build_h2c`); each side sells
+its machine and the other removes it, ending at the map's original layout `count=392 hash=dde9bf88…`
+(`remove_c2h`, `remove_h2c`).
+
+| Run | 13 earlier checks | build_c2h | build_drawn | build_h2c | remove_c2h | remove_h2c | Verdict |
+|---|---|---|---|---|---|---|---|
+| normal 06:51 | 13/13 ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | PASS |
+| normal 06:59 | 13/13 ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | PASS |
+| mutant `nojoin` | 1/13 (no_double) | ❌ | ❌ | ❌ | ❌ | ❌ | PASS (caught) |
+| mutant `drop_spend` | 12/13 (client_spend ❌) | ✅ | ✅ | ✅ | ✅ | ✅ | PASS (caught) |
+| mutant `no_date` | 12/13 (date ❌) | ✅ | ✅ | ✅ | ✅ | ✅ | PASS (caught) |
+| mutant `no_cursor` | 11/13 (cursor_c2h, cursor_drawn ❌) | ✅ | ✅ | ✅ | ✅ | ✅ | PASS (caught) |
+| mutant `no_place` | 13/13 | ❌ | ❌ | ✅ | ❌ (nothing to remove on the host) | ✅ | PASS (caught) |
+| mutant `no_remove` | 13/13 | ✅ | ✅ | ✅ | ❌ | ✅ | PASS (caught) |
+
+The first `no_place` run was marked FAIL by the runner because `remove_c2h` also failed; that is a
+consequence of the mutant (the host never had the client's machine), so the expectation was widened and
+the rerun at 07:00 passed. Captures show both machines on both copies after the builds.
 
 ### Results, protocol 3 (2026-10-30 05:10-05:15, private\lab-results\)
 
@@ -254,7 +277,12 @@ stole the reply meant for the next command. Each request now has its own reply c
 
 ## Not proven / known gaps
 
-- Building after join is not synced: placing or removing anything shows up only on that player's copy.
+- Building is tested with one object type (Snack Machine), bought by posted clicks and sold through the
+  game's sell path from Lua (the sell dialog skipped). Not tested: fences and paths (drag-placed), tank
+  walls, habitats/gates, terraforming, rotation other than the default, the bulldozer with a real mouse,
+  undo, and **moving** an object (picking it up and dropping it goes through `placeEntityOnMap` but not
+  through `removeEntityFromMap`, so the other copy probably gets a second one instead of a move).
+- Two players building on the same tile at the same moment are not reconciled (no host validation).
 - Cursors are only tested with the lab's faked position, never a real mouse, and with both copies
   looking at the same spot (same camera after join); a different camera/zoom/rotation on the two sides
   is untested. The cursor is a world point at ground level (z=0), so on raised terrain it can sit a few
@@ -268,7 +296,8 @@ stole the reply meant for the next command. Each request now has its own reply c
 - The client's own sim still runs. Its income is overwritten by the next snapshot, but any *vanilla*
   `subtractCash` it makes for sim reasons (if any exist: salaries/upkeep may go through Rust ZooStatus
   instead) would be forwarded to the host as a spend. Needs a caller audit.
-- `addCash` refunds on the client (selling objects) are not forwarded yet.
+- Refunds: when the client sells, the host's replay refunds the host, which is what counts; other
+  client-side `addCash` calls are not forwarded.
 - The lab spends through the vanilla `subtractCash` entry point from Lua and pauses through the same
   functions the pause button uses, not through real mouse clicks.
 - One client per host. No reconnect, no host migration, no relay, no in-game UI.
