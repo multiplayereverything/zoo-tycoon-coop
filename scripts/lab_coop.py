@@ -35,6 +35,7 @@ Checks, in order:
                  the game's GetCursorPos follows the lab's mouse) and names the new exhibit; the host
                  builds the same fence, gets one more exhibit and shows no name prompt
   exhibit_h2c    the host builds its own exhibit the same way; the client gets it
+  path_c2h       the client drags a path (Construction panel, Paths tab); the host gets the same pieces
   animal_c2h     the client adopts an African Elephant inside that exhibit; the host adds it
 
 --mutant nojoin      client never joins          -> zoo_transfer..client_spend must FAIL
@@ -77,7 +78,7 @@ MAP = "maps\\default.zoo"
 ALL_CHECKS = ["zoo_transfer", "layout", "cash_join", "host_change", "client_spend", "no_double", "date",
               "host_pause", "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
               "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c", "hire_c2h",
-              "admission_c2h", "admission_h2c", "move_c2h", "fire_c2h", "exhibit_c2h", "exhibit_h2c", "animal_c2h"]
+              "admission_c2h", "admission_h2c", "move_c2h", "fire_c2h", "exhibit_c2h", "exhibit_h2c", "path_c2h", "animal_c2h"]
 CURSOR_CHECKS = {"cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn"}
 EXPECTED_FAIL = {
     None: set(),
@@ -85,14 +86,14 @@ EXPECTED_FAIL = {
                "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
                "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c", "hire_c2h",
                "admission_c2h", "admission_h2c", "move_c2h", "fire_c2h", "exhibit_c2h", "exhibit_h2c",
-               "animal_c2h"},
+               "path_c2h", "animal_c2h"},
     "drop_spend": {"client_spend"},
     "no_date": {"date"},
     "no_cursor": {"cursor_c2h", "cursor_drawn"},
     # no_place also breaks what depends on the client's placements reaching the host; exhibit_h2c fails
     # because the copies then number exhibits differently and a gate carries its exhibit's name.
     "no_place": {"build_c2h", "build_drawn", "remove_c2h", "hire_c2h", "move_c2h", "fire_c2h", "exhibit_c2h",
-                 "exhibit_h2c", "animal_c2h"},  # the host never had the client's build to remove
+                 "exhibit_h2c", "path_c2h", "animal_c2h"},  # the host never had the client's build to remove
     "no_remove": {"remove_c2h", "fire_c2h"},
     "no_admission": {"admission_c2h"},
     "no_move": {"move_c2h"},
@@ -111,7 +112,9 @@ FENCE_ITEM = (82, 77)
 NAME_OK = (406, 332)  # OK in the "New Exhibit Name" prompt
 # The exhibit: a square from S along the two map axes, 3 tiles a side.
 EXHIBIT_S, AXIS_A, AXIS_B = (520, 140), (96, 48), (96, -48)
-HOST_EXHIBIT_S = (300, 170)  # the host's own exhibit, left of the client's
+HOST_EXHIBIT_S = (300, 170)
+PATHS_TAB = (182, 108)  # second tab on the Construction panel's right edge
+PATH_FROM = (360, 300)  # on grass between the exhibits and the entrance path  # the host's own exhibit, left of the client's
 
 
 def lua(addr, code, timeout=30.0):
@@ -409,7 +412,7 @@ def run(args, results):
 
     if not checks["zoo_transfer"]:
         # The client never entered the zoo (nojoin): the in-zoo steps below would click its menu.
-        for k in ("move_c2h", "fire_c2h", "exhibit_c2h", "exhibit_h2c", "animal_c2h"):
+        for k in ("move_c2h", "fire_c2h", "exhibit_c2h", "exhibit_h2c", "path_c2h", "animal_c2h"):
             checks[k] = False
         return
 
@@ -486,6 +489,27 @@ def run(args, results):
     checks["exhibit_c2h"], results["exhibit_c2h"] = exhibit(client_pid, CLIENT_CONSOLE, HOST_CONSOLE, EXHIBIT_S)
     checks["exhibit_h2c"], results["exhibit_h2c"] = exhibit(host_pid, HOST_CONSOLE, CLIENT_CONSOLE, HOST_EXHIBIT_S)
     (sx, sy), (ax, ay), (bx, by) = EXHIBIT_S, AXIS_A, AXIS_B
+
+    # Path: a straight drag along one map axis with the first path type.
+    before = set(lua(CLIENT_CONSOLE, "return coop_layout_list()").splitlines())
+    open_panel(client_pid, CLIENT_CONSOLE, CONSTRUCTION_BUTTON)
+    ui_click(client_pid, CLIENT_CONSOLE, *PATHS_TAB)
+    time.sleep(0.5)
+    ui_click(client_pid, CLIENT_CONSOLE, *FENCE_ITEM)  # first item of the list
+    move = (lambda x, y: lua(CLIENT_CONSOLE, f"return coop_test_cursor({x}, {y})"))
+    zt_launch.drag(client_pid, *PATH_FROM, PATH_FROM[0] + 2 * AXIS_B[0], PATH_FROM[1] + 2 * AXIS_B[1], on_move=move)
+    lua(CLIENT_CONSOLE, "return coop_test_cursor(-1, 0)")
+    close_panel(client_pid, CLIENT_CONSOLE)
+
+    def path_pieces():
+        added = set(lua(CLIENT_CONSOLE, "return coop_layout_list()").splitlines()) - before
+        host = set(lua(HOST_CONSOLE, "return coop_layout_list()").splitlines())
+        return added if added and added <= host else None
+
+    added = wait_until(path_pieces, 3)
+    client_added = set(lua(CLIENT_CONSOLE, "return coop_layout_list()").splitlines()) - before
+    checks["path_c2h"] = bool(added)
+    results["path"] = {"client_added": sorted(client_added)[:6], "client_added_count": len(client_added)}
 
     # Animal: adopt one inside the exhibit.
     applied0 = int(status(HOST_CONSOLE).get("places_applied", 0))

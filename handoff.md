@@ -21,7 +21,7 @@ Zoo Tycoon\ZooTogether\          this repo (the game never scans it)
   scripts\setup-lab.ps1          makes private\lab-host + private\lab-client (hardlinked copies)
   scripts\zt_launch.py           starts a copy suspended, lifts the one-instance check, parks it
                                  off-screen, captures its window (PrintWindow, needs Pillow)
-  scripts\lab_coop.py            the two-copy co-op lab, 26 checks (+ 8 mutants)
+  scripts\lab_coop.py            the two-copy co-op lab, 27 checks (+ 8 mutants)
   scripts\lab_all.py             runs lab_coop normally and once per mutant, writes a summary table
   scripts\get-openzt.ps1         clones openzt at df01b96 and applies the patch into vendor\openzt
   patches\openzt-zoo-together.patch   our changes to openzt, as patches on upstream df01b96
@@ -261,7 +261,14 @@ it). The script handles both. Output: `vendor\openzt\target\i686-pc-windows-msvc
   turns it on) did not work with posted clicks; it seems to pick the object under the *real* mouse,
   not checked. The lab sells through the game's sell path from Lua instead (`coop_test_sell`).
 
-### Results, firing staff (2026-10-30 10:21-, private\lab-results\*-summary.md)
+### Results, paths (2026-10-30 10:50)
+
+New check `path_c2h`: the client opens the Construction panel's Paths tab (182,108), takes the first
+item (Dirt Path) and drags a line; every piece it added (7 `paths/dirtpath`, same position, rotation
+and name) is on the host. No code change was needed: path pieces are placements. Normal 10:50 27/27,
+`no_place` caught (it now also expects `path_c2h` to fail).
+
+### Results, firing staff (2026-10-30 10:21-10:47, private\lab-results\*-summary.md)
 
 New check `fire_c2h`: the client fires the keeper it moved (sell path); the host's keeper of that type
 is gone. `no_remove` now also expects it to fail. Normal run 10:21 26/26 after the undo fix. Full suite 10:24-10:47
@@ -396,8 +403,8 @@ stole the reply meant for the next command. Each request now has its own reply c
   undo, and **moving** an object (picking it up and dropping it goes through `placeEntityOnMap` but not
   through `removeEntityFromMap`, so the other copy probably gets a second one instead of a move).
 - Two players building on the same tile at the same moment are not reconciled (no host validation).
-- Exhibits: tested with one fence type, one 3x3 square built by each side. Paths, tank exhibits,
-  water and terrain are not tested.
+- Exhibits: tested with one fence type, one 3x3 square built by each side. Paths: one dirt path line
+  by the client. Tank exhibits, water, terrain (terraforming), trees and rocks are not tested.
 - Moves: tested with one keeper picked up through the game's function (not a mouse click on the
   walking keeper) by the client. If several entities of that type are close together, the replay may
   move a different one than the player did. A pick-up while the replaying player is carrying

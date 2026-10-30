@@ -54,7 +54,7 @@ Or use openzt's Lua console (`127.0.0.1:8080`): `coop_host()`, `coop_join("ip")`
 them side by side, hidden, and writes a summary table: the client joins and receives the zoo; budget,
 date and pause are checked both ways; each player's cursor must reach and be drawn on the other side;
 each player buys a snack machine with real (posted) clicks and sells it, and both copies must end with
-the same layout; the client hires a keeper, moves it and fires it, each side fences in an exhibit, the client
+the same layout; the client hires a keeper, moves it and fires it, each side fences in an exhibit, the client lays a path, the client
 adopts an elephant, and the admission price is set from each side. Each mutant
 (`nojoin`, `drop_spend`, `no_date`, `no_cursor`, `no_place`, `no_remove`, `no_admission`, `no_move`)
 breaks one feature on purpose and the lab must catch it.
