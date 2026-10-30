@@ -28,9 +28,12 @@ Checks, in order:
   hire_c2h       the client hires a zookeeper with real clicks; the host adds the same keeper
   admission_c2h  the client sets the admission price (through the price panel's setter); the host takes it
   admission_h2c  the host sets it; the client follows
+  move_c2h       the client picks up the keeper it hired and drops it elsewhere; the host moves its copy
+                 of that keeper there (staff and animals walk on each copy, so it is found by nearest)
   exhibit_c2h    the client drags a square of fence (real drags; the copies run with ZT_LAB_FAKE_MOUSE so
                  the game's GetCursorPos follows the lab's mouse) and names the new exhibit; the host
                  builds the same fence, gets one more exhibit and shows no name prompt
+  exhibit_h2c    the host builds its own exhibit the same way; the client gets it
   animal_c2h     the client adopts an African Elephant inside that exhibit; the host adds it
 
 --mutant nojoin      client never joins          -> zoo_transfer..client_spend must FAIL
@@ -42,6 +45,7 @@ Checks, in order:
                      (no_place also stops the client's hire, fence and animal, so hire_c2h,
                      exhibit_c2h and animal_c2h fail under it too)
 --mutant no_admission  client never sends its price -> admission_c2h must FAIL
+--mutant no_move     client never sends its moves -> move_c2h must FAIL
 
 build_drawn needs Pillow; the lab looks for it in private/pylib (pip install --target private/pylib pillow).
 
@@ -72,20 +76,25 @@ MAP = "maps\\default.zoo"
 ALL_CHECKS = ["zoo_transfer", "layout", "cash_join", "host_change", "client_spend", "no_double", "date",
               "host_pause", "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
               "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c", "hire_c2h",
-              "admission_c2h", "admission_h2c", "exhibit_c2h", "animal_c2h"]
+              "admission_c2h", "admission_h2c", "move_c2h", "exhibit_c2h", "exhibit_h2c", "animal_c2h"]
 CURSOR_CHECKS = {"cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn"}
 EXPECTED_FAIL = {
     None: set(),
     "nojoin": {"zoo_transfer", "layout", "cash_join", "host_change", "client_spend", "date", "host_pause",
                "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
                "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c", "hire_c2h",
-               "admission_c2h", "admission_h2c", "exhibit_c2h", "animal_c2h"},
+               "admission_c2h", "admission_h2c", "move_c2h", "exhibit_c2h", "exhibit_h2c",
+               "animal_c2h"},
     "drop_spend": {"client_spend"},
     "no_date": {"date"},
     "no_cursor": {"cursor_c2h", "cursor_drawn"},
-    "no_place": {"build_c2h", "build_drawn", "remove_c2h", "hire_c2h", "exhibit_c2h", "animal_c2h"},  # the host never had the client's build to remove
+    # no_place also breaks what depends on the client's placements reaching the host; exhibit_h2c fails
+    # because the copies then number exhibits differently and a gate carries its exhibit's name.
+    "no_place": {"build_c2h", "build_drawn", "remove_c2h", "hire_c2h", "move_c2h", "exhibit_c2h", "exhibit_h2c",
+                 "animal_c2h"},  # the host never had the client's build to remove
     "no_remove": {"remove_c2h"},
     "no_admission": {"admission_c2h"},
+    "no_move": {"move_c2h"},
 }
 # Buy menu: the Buildings button, then a free grass pixel; the first item (Snack Machine) is selected.
 BUILDINGS_BUTTON = (25, 125)
@@ -93,6 +102,7 @@ CLIENT_BUILD_AT = (600, 150)
 HOST_BUILD_AT = (450, 110)
 STAFF_BUTTON = (25, 170)  # first item: Zookeeper, $800 a month
 CLIENT_HIRE_AT = (500, 150)
+MOVE_TO = (700, 230)
 CONSTRUCTION_BUTTON = (30, 34)  # opens the Fences list
 CREATURES_BUTTON = (30, 80)  # first item: African Elephant, $2500
 FENCE_LIST = (110, 160)  # 8 wheel notches down puts Low Stick Pole Fence ($55, land) first
@@ -100,6 +110,7 @@ FENCE_ITEM = (82, 77)
 NAME_OK = (406, 332)  # OK in the "New Exhibit Name" prompt
 # The exhibit: a square from S along the two map axes, 3 tiles a side.
 EXHIBIT_S, AXIS_A, AXIS_B = (520, 140), (96, 48), (96, -48)
+HOST_EXHIBIT_S = (300, 170)  # the host's own exhibit, left of the client's
 
 
 def lua(addr, code, timeout=30.0):
@@ -188,7 +199,7 @@ def run(args, results):
     pids = results["pids"]
     base_env = {"OPENZT_NO_CONSOLE": "1", "ZT_LAB_FAKE_MOUSE": "1"}
     client_env = dict(base_env)
-    if args.mutant in ("no_date", "no_cursor", "no_place", "no_remove", "no_admission"):
+    if args.mutant in ("no_date", "no_cursor", "no_place", "no_remove", "no_admission", "no_move"):
         client_env["ZT_COOP_MUTANT"] = args.mutant
     host_env = dict(base_env)
     if args.mutant == "drop_spend":
@@ -305,7 +316,7 @@ def run(args, results):
         zt_launch.capture(host_pid, shot)
         x, y = CLIENT_BUILD_AT
         with Image.open(shot) as im:
-            return list(im.crop((x - 40, y - 60, x + 40, y + 20)).getdata())
+            return list(im.crop((x - 40, y - 60, x + 40, y + 20)).get_flattened_data())
 
     before = host_region()
     applied0 = int(status(HOST_CONSOLE).get("places_applied", 0))
@@ -316,8 +327,12 @@ def run(args, results):
     time.sleep(0.5)
     layouts = {a[1]: lua(a, "return coop_layout()") for a in (HOST_CONSOLE, CLIENT_CONSOLE)}
     checks["build_c2h"] = bool(c_placed not in (None, "none") and got and layouts[8181] == layouts[8182])
-    after = host_region()
-    changed = sum(1 for a, b in zip(before, after) if sum(abs(i - j) for i, j in zip(a, b)) > 60)
+    def changed_pixels():
+        after = host_region()
+        return sum(1 for a, b in zip(before, after) if sum(abs(i - j) for i, j in zip(a, b)) > 60)
+
+    # A capture can return an old frame, so look again for a few seconds before calling it unchanged.
+    changed = wait_until(lambda: (lambda n: n if n > 200 else 0)(changed_pixels()), 3, step=0.5) or 0
     checks["build_drawn"] = checks["build_c2h"] and changed > 200
     results["build"] = {"client_placed": c_placed, "host_layout": layouts[8181], "client_layout": layouts[8182],
                         "host_pixels_changed": changed}
@@ -391,46 +406,77 @@ def run(args, results):
     results["admission"] = {"after_client_set": [a_host_1, a_client_1],
                             "after_host_set": [admission(HOST_CONSOLE), admission(CLIENT_CONSOLE)]}
 
-    # Exhibit: the client drags a closed square of fence.
-    ex_host0, ex_client0 = exhibits(HOST_CONSOLE), exhibits(CLIENT_CONSOLE)
-    applied0 = int(status(HOST_CONSOLE).get("places_applied", 0))
-    open_panel(client_pid, CLIENT_CONSOLE, CONSTRUCTION_BUTTON)
-    zt_launch.wheel(client_pid, *FENCE_LIST, -8)
-    ui_click(client_pid, CLIENT_CONSOLE, *FENCE_ITEM)
+    if not checks["zoo_transfer"]:
+        # The client never entered the zoo (nojoin): the in-zoo steps below would click its menu.
+        for k in ("move_c2h", "exhibit_c2h", "exhibit_h2c", "animal_c2h"):
+            checks[k] = False
+        return
+
+    # Move: pick up the keeper just hired (the game's pick-up; clicking a walking keeper in a parked
+    # window is unreliable) and drop it with a posted click where the fake mouse is.
+    applied0 = int(status(HOST_CONSOLE).get("moves_applied", 0))
+    m = re.match(r"(\w+)/(\w+)@(-?\d+),(-?\d+),(-?\d+)", hired)
+    moved = "none"
+    if m:
+        lua(CLIENT_CONSOLE, f'return coop_test_pickup("{m[1]}", "{m[2]}", {m[3]}, {m[4]}, {m[5]})')
+        lua(CLIENT_CONSOLE, f"return coop_test_cursor({MOVE_TO[0]}, {MOVE_TO[1]})")
+        time.sleep(0.5)
+        zt_launch.click(client_pid, *MOVE_TO)
+        time.sleep(0.5)
+        lua(CLIENT_CONSOLE, "return coop_test_cursor(-1, 0)")
+        moved = status(CLIENT_CONSOLE).get("last_moved", "none")
+    got = wait_until(lambda: int(status(HOST_CONSOLE).get("moves_applied", 0)) > applied0, 3)
+    to = re.search(r"->(\w+)/(\w+)@(-?\d+),(-?\d+),(-?\d+)", moved)
+    host_near = lua(HOST_CONSOLE, f'return coop_nearest("{to[1]}", "{to[2]}", {to[3]}, {to[4]}, {to[5]})') if to else "none"
+    hn = re.search(r"@(-?\d+),(-?\d+)", host_near)
+    # The keeper starts walking again right away, so allow a little distance.
+    checks["move_c2h"] = bool(got and to and hn and abs(int(hn[1]) - int(to[3])) <= 64 and abs(int(hn[2]) - int(to[4])) <= 64)
+    results["move"] = {"client_moved": moved, "host_nearest": host_near}
+
+    def exhibit(builder_pid, builder, other, start):
+        """The builder drags a closed square of fence from `start`; the other copy must end with the
+        same fence pieces and one more exhibit, with no name prompt of its own."""
+        ex0 = {a[1]: exhibits(a) for a in (builder, other)}
+        before = set(lua(builder, "return coop_layout_list()").splitlines())
+        applied0 = int(status(other).get("places_applied", 0))
+        open_panel(builder_pid, builder, CONSTRUCTION_BUTTON)
+        zt_launch.wheel(builder_pid, *FENCE_LIST, -8)
+        ui_click(builder_pid, builder, *FENCE_ITEM)
+        (sx, sy), (ax, ay), (bx, by) = start, AXIS_A, AXIS_B
+        corners = [(sx, sy), (sx + ax, sy + ay), (sx + ax + bx, sy + ay + by), (sx + bx, sy + by), (sx, sy)]
+        move = (lambda x, y: lua(builder, f"return coop_test_cursor({x}, {y})"))
+        for a, b in zip(corners, corners[1:]):
+            zt_launch.drag(builder_pid, *a, *b, on_move=move)
+        # Closing the exhibit opens the builder's name prompt, which blocks its console until OK.
+        time.sleep(1)
+        zt_launch.click(builder_pid, *NAME_OK)  # a dialog button takes the message's position
+        time.sleep(1)
+        lua(builder, "return coop_test_cursor(-1, 0)")
+        applied = int(status(other).get("places_applied", 0)) - applied0
+        fence_type = (status(builder).get("last_placed") or "?").split("/")[0] + "/"
+
+        def fences(addr):  # every piece of that fence type: position, rotation, type and name
+            return sorted(line for line in lua(addr, "return coop_layout_list()").splitlines() if line.startswith(fence_type))
+
+        def same():
+            # The pieces this drag added on the builder must all be on the other copy, identical
+            # (earlier steps may already have left other differences under a mutant).
+            added = set(fences(builder)) - before
+            return added if added and added <= set(fences(other)) else None
+
+        # The game turns a fence piece into a gate some frames after the exhibit closes; the
+        # replaying copy undoes its own one on a later tick, so give it a few seconds.
+        wait_until(same, 5)
+        ex1 = {a[1]: exhibits(a) for a in (builder, other)}
+        close_panel(builder_pid, builder)
+        # Only the fence is compared: under some mutants earlier steps already left the layouts apart.
+        ok = bool(all(ex1[k] == ex0[k] + 1 for k in ex0) and same() and applied >= 8)
+        return ok, {"exhibits_before": ex0, "exhibits_after": ex1, "pieces_applied": applied,
+                    "fence_pieces": len(fences(builder))}
+
+    checks["exhibit_c2h"], results["exhibit_c2h"] = exhibit(client_pid, CLIENT_CONSOLE, HOST_CONSOLE, EXHIBIT_S)
+    checks["exhibit_h2c"], results["exhibit_h2c"] = exhibit(host_pid, HOST_CONSOLE, CLIENT_CONSOLE, HOST_EXHIBIT_S)
     (sx, sy), (ax, ay), (bx, by) = EXHIBIT_S, AXIS_A, AXIS_B
-    corners = [(sx, sy), (sx + ax, sy + ay), (sx + ax + bx, sy + ay + by), (sx + bx, sy + by), (sx, sy)]
-    for i, (a, b) in enumerate(zip(corners, corners[1:])):
-        # The last drag closes the exhibit; the client's own name prompt then blocks its console
-        # until OK, so that drag can't move the fake mouse after the button is released.
-        move = (lambda x, y: lua(CLIENT_CONSOLE, f"return coop_test_cursor({x}, {y})"))
-        zt_launch.drag(client_pid, *a, *b, on_move=move)
-    time.sleep(1)
-    zt_launch.click(client_pid, *NAME_OK)  # a click on a dialog button uses the message's position
-    time.sleep(1)
-    lua(CLIENT_CONSOLE, "return coop_test_cursor(-1, 0)")
-    host_fences = int(status(HOST_CONSOLE).get("places_applied", 0)) - applied0
-
-    fence_type = (status(CLIENT_CONSOLE).get("last_placed") or "?").split("/")[0] + "/"
-
-    def fences(addr):  # every piece of that fence type: position, rotation, type and name
-        return sorted(line for line in lua(addr, "return coop_layout_list()").splitlines() if line.startswith(fence_type))
-
-    def same_layout():
-        f = fences(HOST_CONSOLE)
-        return f if f and f == fences(CLIENT_CONSOLE) else None
-
-    # The game turns a fence piece into a gate some frames after the exhibit closes; the host undoes
-    # its own one on a later tick, so give it a few seconds.
-    wait_until(same_layout, 5)
-    layouts = {a[1]: lua(a, "return coop_layout()") for a in (HOST_CONSOLE, CLIENT_CONSOLE)}
-    ex_host1, ex_client1 = exhibits(HOST_CONSOLE), exhibits(CLIENT_CONSOLE)
-    # Only the fence is compared: under some mutants earlier steps already left the layouts apart.
-    checks["exhibit_c2h"] = bool(ex_client1 == ex_client0 + 1 and ex_host1 == ex_host0 + 1
-                                 and same_layout() and host_fences >= 8)
-    results["exhibit"] = {"exhibits_host": [ex_host0, ex_host1], "exhibits_client": [ex_client0, ex_client1],
-                          "host_fences_applied": host_fences, "host_layout": layouts[8181],
-                          "client_layout": layouts[8182], "client_last_placed": status(CLIENT_CONSOLE).get("last_placed")}
-    close_panel(client_pid, CLIENT_CONSOLE)
 
     # Animal: adopt one inside the exhibit.
     applied0 = int(status(HOST_CONSOLE).get("places_applied", 0))
@@ -451,7 +497,7 @@ def run(args, results):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mutant", choices=["nojoin", "drop_spend", "no_date", "no_cursor", "no_place", "no_remove", "no_admission"], default=None)
+    ap.add_argument("--mutant", choices=["nojoin", "drop_spend", "no_date", "no_cursor", "no_place", "no_remove", "no_admission", "no_move"], default=None)
     ap.add_argument("--keep", action="store_true", help="leave the copies running")
     ap.add_argument("--shots", action="store_true", help="save window captures (needs Pillow)")
     args = ap.parse_args()

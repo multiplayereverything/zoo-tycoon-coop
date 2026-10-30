@@ -1,7 +1,7 @@
 From beed50b7f5098f3cbb80e31447184686bcd50973 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 01:22:29 +0200
-Subject: [PATCH 1/7] ZooTogether: host-authoritative shared budget over TCP
+Subject: [PATCH 1/8] ZooTogether: host-authoritative shared budget over TCP
  (coop feature)
 
 - coop.rs: session, framed wire protocol, client/host spend ledgers, Lua commands
@@ -830,7 +830,7 @@ index b81a048..260db83 100644
 From e8c69374d76e8860a39f03cf99191bf42b78d805 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 03:31:53 +0200
-Subject: [PATCH 2/7] ZooTogether protocol 2: join-in-progress zoo transfer,
+Subject: [PATCH 2/8] ZooTogether protocol 2: join-in-progress zoo transfer,
  date and pause sync
 
 - Host saves its zoo through SAVE_GAME (save dialog detoured to a fixed path) and streams it in
@@ -1833,7 +1833,7 @@ index 1ec6ce8..909a1f4 100644
 From 0451b17ae2cc9fd5a5004d7f9081254fde9ddfc8 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 05:16:29 +0200
-Subject: [PATCH 3/7] ZooTogether protocol 3: player cursors
+Subject: [PATCH 3/8] ZooTogether protocol 3: player cursors
 
 - Cursor message (world position, 10 Hz max, on change) both ways
 - Screen<->world via ZTMapView/BFMap camera origin and virtualToWorld/worldToVirtual
@@ -2226,7 +2226,7 @@ index c52bee2..5fc2ef0 100644
 From c79f2687e6163315b58e09882bc8d7a353ad8420 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 06:31:20 +0200
-Subject: [PATCH 4/7] ZooTogether protocol 4: building sync (placements both
+Subject: [PATCH 4/8] ZooTogether protocol 4: building sync (placements both
  ways)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -2541,7 +2541,7 @@ index 909a1f4..340a2d5 100644
 From 4ca25cb39daa9728012c4a5adf0e22fadf19624b Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 07:01:23 +0200
-Subject: [PATCH 5/7] ZooTogether protocol 5: removal sync; re-entrancy-safe
+Subject: [PATCH 5/8] ZooTogether protocol 5: removal sync; re-entrancy-safe
  console and coop tick
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -2918,7 +2918,7 @@ index 340a2d5..ad6935b 100644
 From dcf6482a19e874e32e6b1be3f9d8552db4f096c7 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 07:18:28 +0200
-Subject: [PATCH 6/7] ZooTogether protocol 6: admission price sync
+Subject: [PATCH 6/8] ZooTogether protocol 6: admission price sync
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -3174,7 +3174,7 @@ index b3fac1a..546ae16 100644
 From a1b063018e7a4298a9f25ec55182ef462e5716fb Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 08:48:36 +0200
-Subject: [PATCH 7/7] ZooTogether: exhibits and animals (fence replay position,
+Subject: [PATCH 7/8] ZooTogether: exhibits and animals (fence replay position,
  name prompt, gate reconcile), lab fake mouse
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -3439,6 +3439,343 @@ index 897f7e0..56e88e9 100644
  
          result
      }
+-- 
+2.56.0.windows.3
+
+
+From 1488657e91838f45a7b8d38bd7ab5fde3dbffc60 Mon Sep 17 00:00:00 2001
+From: multiplayereverything <multiplayereverythingofficial@gmail.com>
+Date: Fri, 30 Oct 2026 09:56:03 +0200
+Subject: [PATCH 8/8] ZooTogether protocol 7: moving staff and animals
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ openzt/src/coop.rs       | 193 ++++++++++++++++++++++++++++++++++-----
+ openzt/src/ztworldmgr.rs |   6 ++
+ 2 files changed, 178 insertions(+), 21 deletions(-)
+
+diff --git a/openzt/src/coop.rs b/openzt/src/coop.rs
+index bd35cf3..a5006d3 100644
+--- a/openzt/src/coop.rs
++++ b/openzt/src/coop.rs
+@@ -36,7 +36,7 @@ use tracing::{error, info, warn};
+ 
+ use crate::{globals::globals, lua_fn};
+ 
+-pub const PROTOCOL_VERSION: u16 = 6;
++pub const PROTOCOL_VERSION: u16 = 7;
+ pub const DEFAULT_PORT: u16 = 27150;
+ const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(200);
+ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
+@@ -67,6 +67,8 @@ pub enum Msg {
+     Removed(Placement),
+     /// Client -> host: the client's player set the adult admission price.
+     Admission(f32),
++    /// An object was picked up and put down elsewhere on the sender's copy (from, to).
++    Moved(Placement, Placement),
+     Keepalive,
+ }
+ 
+@@ -102,6 +104,35 @@ const T_CURSOR: u8 = 8;
+ const T_PLACED: u8 = 9;
+ const T_REMOVED: u8 = 10;
+ const T_ADMISSION: u8 = 11;
++const T_MOVED: u8 = 12;
++
++fn put_placement(b: &mut Vec<u8>, pl: &Placement) {
++    for v in pl.pos.iter().chain([pl.rotation].iter()) {
++        b.extend_from_slice(&v.to_le_bytes());
++    }
++    for s in [&pl.zt_type, &pl.zt_sub_type] {
++        let bytes = &s.as_bytes()[..s.len().min(255)];
++        b.push(bytes.len() as u8);
++        b.extend_from_slice(bytes);
++    }
++}
++
++/// Reads a placement starting at `*at` and advances `*at` past it.
++fn get_placement(p: &[u8], at: &mut usize) -> Option<Placement> {
++    let i32_at = |i: usize| p.get(i..i + 4).map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]));
++    let start = *at;
++    let pos = [i32_at(start)?, i32_at(start + 4)?, i32_at(start + 8)?];
++    let rotation = i32_at(start + 12)?;
++    *at = start + 16;
++    let mut text = || {
++        let n = *p.get(*at)? as usize;
++        let s = String::from_utf8(p.get(*at + 1..*at + 1 + n)?.to_vec()).ok()?;
++        *at += 1 + n;
++        Some(s)
++    };
++    let (zt_type, zt_sub_type) = (text()?, text()?);
++    Some(Placement { zt_type, zt_sub_type, pos, rotation })
++}
+ 
+ pub const ROLE_HOST: u8 = 1;
+ pub const ROLE_CLIENT: u8 = 2;
+@@ -158,14 +189,12 @@ impl Msg {
+             }
+             Msg::Placed(pl) | Msg::Removed(pl) => {
+                 b.push(if matches!(self, Msg::Placed(_)) { T_PLACED } else { T_REMOVED });
+-                for v in pl.pos.iter().chain([pl.rotation].iter()) {
+-                    b.extend_from_slice(&v.to_le_bytes());
+-                }
+-                for s in [&pl.zt_type, &pl.zt_sub_type] {
+-                    let bytes = &s.as_bytes()[..s.len().min(255)];
+-                    b.push(bytes.len() as u8);
+-                    b.extend_from_slice(bytes);
+-                }
++                put_placement(&mut b, pl);
++            }
++            Msg::Moved(from, to) => {
++                b.push(T_MOVED);
++                put_placement(&mut b, from);
++                put_placement(&mut b, to);
+             }
+             Msg::Keepalive => b.push(T_KEEPALIVE),
+         }
+@@ -207,20 +236,18 @@ impl Msg {
+                 let w = [u32_at(1)? as i32, u32_at(5)? as i32, u32_at(9)? as i32];
+                 Some(Msg::Cursor(bool_at(0)?.then_some(w)))
+             }
+-            T_PLACED | T_REMOVED if p.len() >= 18 => {
+-                let i32_at = |i: usize| u32_at(i).map(|v| v as i32);
+-                let mut at = 16;
+-                let mut text = || {
+-                    let n = *p.get(at)? as usize;
+-                    let s = String::from_utf8(p.get(at + 1..at + 1 + n)?.to_vec()).ok()?;
+-                    at += 1 + n;
+-                    Some(s)
+-                };
+-                let (zt_type, zt_sub_type) = (text()?, text()?);
++            T_PLACED | T_REMOVED => {
++                let mut at = 0;
++                let pl = get_placement(p, &mut at)?;
+                 (at == p.len()).then_some(())?;
+-                let pl = Placement { zt_type, zt_sub_type, pos: [i32_at(0)?, i32_at(4)?, i32_at(8)?], rotation: i32_at(12)? };
+                 Some(if t == T_PLACED { Msg::Placed(pl) } else { Msg::Removed(pl) })
+             }
++            T_MOVED => {
++                let mut at = 0;
++                let (from, to) = (get_placement(p, &mut at)?, get_placement(p, &mut at)?);
++                (at == p.len()).then_some(())?;
++                Some(Msg::Moved(from, to))
++            }
+             T_KEEPALIVE if p.is_empty() => Some(Msg::Keepalive),
+             _ => None,
+         }
+@@ -479,6 +506,8 @@ struct Stats {
+     removes_applied: u32,
+     admissions_sent: u32,
+     admissions_applied: u32,
++    moves_sent: u32,
++    moves_applied: u32,
+     last_host_cash: f32,
+     last_error: String,
+ }
+@@ -595,7 +624,7 @@ fn status() -> String {
+     with_session(|s| {
+         let cash = game_cash().map(|c| format!("{c:.2}")).unwrap_or_else(|| "none".into());
+         format!(
+-            "role={:?} connected={} world_ready={} in_game={} paused={} date={} cash={} host_cash={:.2} snapshots_sent={} snapshots_applied={} spends_sent={} spends_applied={} pauses_sent={} pauses_applied={} zoo_bytes={} pending={} local_cursor={} remote_cursor={} remote_screen={} cursors_sent={} cursors_drawn={} places_sent={} places_applied={} last_placed={} removes_sent={} removes_applied={} last_removed={} admission={} admissions_sent={} admissions_applied={} exhibits={} last_error={}",
++            "role={:?} connected={} world_ready={} in_game={} paused={} date={} cash={} host_cash={:.2} snapshots_sent={} snapshots_applied={} spends_sent={} spends_applied={} pauses_sent={} pauses_applied={} zoo_bytes={} pending={} local_cursor={} remote_cursor={} remote_screen={} cursors_sent={} cursors_drawn={} places_sent={} places_applied={} last_placed={} removes_sent={} removes_applied={} last_removed={} admission={} admissions_sent={} admissions_applied={} exhibits={} moves_sent={} moves_applied={} last_moved={} last_error={}",
+             s.role,
+             s.peer_ok,
+             s.world_ready,
+@@ -627,6 +656,9 @@ fn status() -> String {
+             s.stats.admissions_sent,
+             s.stats.admissions_applied,
+             if in_game() { globals().zthabitatmgr().exhibit_array().len() } else { 0 },
++            s.stats.moves_sent,
++            s.stats.moves_applied,
++            LAST_MOVED.lock().unwrap().as_ref().map(|(f, t)| format!("{}->{}", fmt_placement(f), fmt_placement(t))).unwrap_or_else(|| "none".into()),
+             if s.stats.last_error.is_empty() { "-" } else { &s.stats.last_error }
+         )
+     })
+@@ -786,6 +818,17 @@ pub fn tick() {
+                 set_admission(price);
+                 s.stats.admissions_applied += 1;
+             }
++            NetEvent::Msg(Msg::Moved(from, to)) => {
++                if s.role == Role::Host || s.world_ready {
++                    match move_entity(&from, &to) {
++                        Ok(()) => s.stats.moves_applied += 1,
++                        Err(e) => {
++                            warn!("coop: remote move failed: {e}");
++                            s.stats.last_error = e;
++                        }
++                    }
++                }
++            }
+             NetEvent::Msg(Msg::Removed(pl)) => {
+                 if s.role == Role::Host || s.world_ready {
+                     match remove_entity(&pl) {
+@@ -863,6 +906,12 @@ pub fn tick() {
+         s.admission_pending = Some((price, Instant::now()));
+         s.stats.admissions_sent += 1;
+     }
++    let moved: Vec<(Placement, Placement)> = PENDING_MOVED.lock().unwrap().drain(..).collect();
++    for (from, to) in moved {
++        if ready && !mutant("no_move") && s.send(Msg::Moved(from, to)) {
++            s.stats.moves_sent += 1;
++        }
++    }
+     let removed: Vec<Placement> = PENDING_REMOVED.lock().unwrap().drain(..).collect();
+     for pl in removed {
+         if ready && !mutant("no_remove") && s.send(Msg::Removed(pl)) {
+@@ -1256,6 +1305,17 @@ pub fn on_entity_placed(entity: u32) {
+         return;
+     }
+     let Some(pl) = placement_of(entity) else { return };
++    let picked = PICKED.lock().unwrap().take();
++    if let Some((picked_entity, from)) = picked
++        && picked_entity == entity
++    {
++        if from != pl {
++            info!("coop: moved {} -> {}", fmt_placement(&from), fmt_placement(&pl));
++            *LAST_MOVED.lock().unwrap() = Some((from.clone(), pl.clone()));
++            PENDING_MOVED.lock().unwrap().push((from, pl));
++        }
++        return;
++    }
+     info!("coop: placed {}", fmt_placement(&pl));
+     *LAST_PLACED.lock().unwrap() = Some(pl.clone());
+     PENDING_PLACED.lock().unwrap().push(pl);
+@@ -1293,6 +1353,72 @@ mod habitat_detours {
+     }
+ }
+ 
++// Moving: the player selects an object and picks it up (`ZTMapView::pickUpSelectedEntity` 0x46ab75,
++// selected entity at map view `+0x438`); it rides on the cursor and the drop goes through
++// `placeEntityOnMap` with the same entity. [`move_detours`] remembers what was picked up and from
++// where, and [`on_entity_placed`] reports the drop as a move instead of a new object.
++
++static PICKED: Mutex<Option<(u32, Placement)>> = Mutex::new(None);
++static PENDING_MOVED: Mutex<Vec<(Placement, Placement)>> = Mutex::new(Vec::new());
++static LAST_MOVED: Mutex<Option<(Placement, Placement)>> = Mutex::new(None);
++
++#[detour_mod]
++mod move_detours {
++    use openzt_detour::generated::ztmapview::PICK_UP_SELECTED_ENTITY;
++
++    #[detour(PICK_UP_SELECTED_ENTITY)]
++    unsafe extern "thiscall" fn pick_up_selected_entity(mapview: *const u32) {
++        if !super::APPLYING_REMOTE.load(std::sync::atomic::Ordering::Relaxed) {
++            let entity = unsafe { *((mapview as u32 + 0x438) as *const u32) };
++            *super::PICKED.lock().unwrap() = super::placement_of(entity).map(|p| (entity, p));
++        }
++        unsafe { PICK_UP_SELECTED_ENTITY_DETOUR.call(mapview) }
++    }
++}
++
++/// The entity of `pl`'s type nearest to `pl`'s position. Animals and staff walk on each copy on its
++/// own, so a carried one is found by type and nearest position, not exact position.
++fn nearest_entity(pl: &Placement) -> Option<u32> {
++    crate::ztworldmgr::coop_all_entities()
++        .into_iter()
++        .filter_map(|e| placement_of(e).filter(|p| p.zt_type == pl.zt_type && p.zt_sub_type == pl.zt_sub_type).map(|p| (e, p)))
++        .min_by_key(|(_, p)| {
++            let (dx, dy) = ((p.pos[0] - pl.pos[0]) as i64, (p.pos[1] - pl.pos[1]) as i64);
++            dx * dx + dy * dy
++        })
++        .map(|(e, _)| e)
++}
++
++/// Moves `from`'s object to `to` on this copy the way the player does: select, pick up, drop.
++/// Only animals and staff can be picked up in Zoo Tycoon (the type's byte `+0x55`).
++fn move_entity(from: &Placement, to: &Placement) -> Result<(), String> {
++    use openzt_detour::generated::{
++        bfentity::{SET_WORLD_POS, SNAP_TO_GRID},
++        ztmapview::{PICK_UP_SELECTED_ENTITY, PLACE_ENTITY_ON_MAP_1, SET_SELECTED_ENTITY_0},
++        ztui_general::GET_MAPVIEW,
++    };
++    let entity = nearest_entity(from).ok_or_else(|| format!("nothing to move near {}", fmt_placement(from)))?;
++    let mapview = unsafe { GET_MAPVIEW.original()() };
++    if mapview.is_null() {
++        return Err("no map view".into());
++    }
++    APPLYING_REMOTE.store(true, Ordering::Relaxed);
++    let placed = unsafe {
++        SET_SELECTED_ENTITY_0.original()(mapview, entity as *const u32, true);
++        PICK_UP_SELECTED_ENTITY.original()(mapview);
++        *((entity + 0x12c) as *mut i32) = to.rotation;
++        SET_WORLD_POS.original()(entity as *const u32, to.pos.as_ptr() as *const u32);
++        SNAP_TO_GRID.original()(entity as *const u32);
++        SET_WORLD_POS.original()(entity as *const u32, to.pos.as_ptr() as *const u32);
++        PLACE_ENTITY_ON_MAP_1.hooked()(mapview, entity as *const u32, 0.0, 0)
++    };
++    APPLYING_REMOTE.store(false, Ordering::Relaxed);
++    if placed.is_null() {
++        return Err(format!("placeEntityOnMap refused the move to {}", fmt_placement(to)));
++    }
++    Ok(())
++}
++
+ /// Gates this copy made on its own out of replayed fence (see `habitat_detours`).
+ static AUTO_GATES: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+ /// Entities this copy placed as replays.
+@@ -1561,6 +1687,9 @@ pub fn init() {
+     if let Err(e) = unsafe { habitat_detours::init_detours() } {
+         error!("coop: failed to install habitat detour: {e:?}");
+     }
++    if let Err(e) = unsafe { move_detours::init_detours() } {
++        error!("coop: failed to install move detour: {e:?}");
++    }
+     if std::env::var("ZT_LAB_FAKE_MOUSE").is_ok_and(|v| v == "1") && let Err(e) = install_fake_mouse() {
+         error!("coop: failed to install the lab's fake mouse: {e}");
+     }
+@@ -1658,6 +1787,26 @@ pub fn init() {
+         v.sort();
+         Ok(v.join("\n"))
+     });
++    lua_fn!("coop_test_pickup", "ZooTogether lab: select the type/subtype animal or staff nearest x, y, z and pick it up",
++        "coop_test_pickup(type, subtype, x, y, z)", |t: String, sub: String, x: i32, y: i32, z: i32| {
++            use openzt_detour::generated::ztmapview::{PICK_UP_SELECTED_ENTITY, SET_SELECTED_ENTITY_0};
++            use openzt_detour::generated::ztui_general::GET_MAPVIEW;
++            let Some(entity) = nearest_entity(&Placement { zt_type: t, zt_sub_type: sub, pos: [x, y, z], rotation: 0 }) else {
++                return Ok(lua_result(Err("not found".into())));
++            };
++            unsafe {
++                let mapview = GET_MAPVIEW.original()();
++                SET_SELECTED_ENTITY_0.original()(mapview, entity as *const u32, true);
++                // .hooked(): through coop's own detour, like the game's pick-up button.
++                PICK_UP_SELECTED_ENTITY.hooked()(mapview);
++            }
++            Ok(lua_result(Ok(format!("picked up {entity:#x}"))))
++        });
++    lua_fn!("coop_nearest", "ZooTogether lab: the type/subtype entity nearest world x, y, z", "coop_nearest(type, subtype, x, y, z)",
++        |t: String, sub: String, x: i32, y: i32, z: i32| {
++            let near = nearest_entity(&Placement { zt_type: t, zt_sub_type: sub, pos: [x, y, z], rotation: 0 });
++            Ok(near.and_then(placement_of).map(|p| fmt_placement(&p)).unwrap_or_else(|| "none".into()))
++        });
+     lua_fn!("coop_place", "ZooTogether: build type/subtype at world x, y, z with rotation", "coop_place(type, subtype, x, y, z, rot)",
+         |t: String, sub: String, x: i32, y: i32, z: i32, rot: i32| {
+             let pl = Placement { zt_type: t, zt_sub_type: sub, pos: [x, y, z], rotation: rot };
+@@ -1711,6 +1860,8 @@ mod tests {
+             admission: 42.5,
+         }));
+         round_trip(Msg::Admission(17.0));
++        let a = Placement { zt_type: "building".into(), zt_sub_type: "vendfood".into(), pos: [1504, 2416, 0], rotation: 4 };
++        round_trip(Msg::Moved(a.clone(), Placement { pos: [1600, 2416, 0], rotation: 2, ..a }));
+         round_trip(Msg::Spend { seq: 9, amount: 250.0 });
+         round_trip(Msg::Pause { seq: 4, paused: false });
+         round_trip(Msg::ZooChunk { offset: 32, total: 40, data: vec![9; 8] });
+diff --git a/openzt/src/ztworldmgr.rs b/openzt/src/ztworldmgr.rs
+index ad6935b..73ebe45 100644
+--- a/openzt/src/ztworldmgr.rs
++++ b/openzt/src/ztworldmgr.rs
+@@ -1346,6 +1346,12 @@ pub(crate) fn coop_static_entities() -> Vec<u32> {
+         .collect()
+ }
+ 
++/// ZooTogether co-op: pointers of every entity in the world (animals, staff and guests included).
++#[cfg(feature = "coop")]
++pub(crate) fn coop_all_entities() -> Vec<u32> {
++    get_zt_world_mgr_entities(globals().ztworldmgr()).into_iter().map(|e| e.ptr).collect()
++}
++
+ /// ZooTogether co-op: every loaded entity type pointer.
+ #[cfg(feature = "coop")]
+ pub(crate) fn coop_entity_types() -> Vec<u32> {
 -- 
 2.56.0.windows.3
 

@@ -2,8 +2,9 @@
 
 Status: **join-in-progress, budget, date, pause, player cursors, building / selling objects, hiring
 staff, the admission price, building exhibits (fences, with their gate) and adopting animals work in a
-two-copy lab** (see "Lab"), version 0.6.0-dev (protocol 6). Not synced: what animals, guests and staff
-*do* afterwards (each copy simulates them), firing staff, moving objects, research, awards.
+two-copy lab** (see "Lab"), and picking up and dropping staff or animals moves them on both copies.
+Version 0.7.0-dev (protocol 7). Not synced: what animals, guests and staff *do* by themselves (each copy
+simulates them), firing staff, research, awards.
 How to work on this repo: [AGENTS.md](AGENTS.md) (Karpathy guidelines + project rules). Repo: https://github.com/multiplayereverything/zoo-tycoon-coop (no
 release yet). Built on [openzt](https://github.com/openzt1/openzt) (by the openzt authors; LICENSE file
 GPL-3.0, Cargo metadata MIT/Apache-2.0, so this repo is GPL-3.0), a Rust DLL that the game loads as
@@ -20,7 +21,7 @@ Zoo Tycoon\ZooTogether\          this repo (the game never scans it)
   scripts\setup-lab.ps1          makes private\lab-host + private\lab-client (hardlinked copies)
   scripts\zt_launch.py           starts a copy suspended, lifts the one-instance check, parks it
                                  off-screen, captures its window (PrintWindow, needs Pillow)
-  scripts\lab_coop.py            the two-copy co-op lab, 23 checks (+ 7 mutants)
+  scripts\lab_coop.py            the two-copy co-op lab, 25 checks (+ 8 mutants)
   scripts\lab_all.py             runs lab_coop normally and once per mutant, writes a summary table
   scripts\get-openzt.ps1         clones openzt at df01b96 and applies the patch into vendor\openzt
   patches\openzt-zoo-together.patch   our changes to openzt, as patches on upstream df01b96
@@ -113,7 +114,8 @@ Phases:
    it (2 s at most).
 7. **Exhibits and animals** (done, see "Building sync"): fence pieces and animal adoptions are
    placements too.
-8. Animal/staff/guest behaviour (positions, escapes, deaths), research, awards (interest-managed, low rate), exhibits, research, awards. Until then
+8. **Moving staff and animals** (done, protocol 7): see "Building sync".
+9. Animal/staff/guest behaviour (positions, escapes, deaths), research, awards (interest-managed, low rate), exhibits, research, awards. Until then
    each copy simulates guests and animals on its own from the join snapshot on.
 
 ## Networking
@@ -125,7 +127,8 @@ Phases:
 - Frames: `u32 len | u8 type | payload` (max 64 KB), protocol 6: Hello{protocol,role},
   State{seq,cash,acked_spend,acked_pause,paused,date[16],admission}, Spend{seq,amount},
   Pause{seq,paused}, ZooChunk{offset,total,data}, ZooLoaded{ok}, Cursor{visible,x,y,z},
-  Placed/Removed{x,y,z,rotation,zt_type,zt_sub_type}, Admission{price}, Keepalive (writer thread, 1 s; read timeout 30 s, per
+  Placed/Removed{x,y,z,rotation,zt_type,zt_sub_type}, Admission{price}, Moved{from, to} (two
+  placements), Keepalive (writer thread, 1 s; read timeout 30 s, per
   Baldi's link-health lesson). A protocol mismatch shows in `coop_status()` and nothing is applied.
 
 ## Building sync (protocol 4-5, 2026-10-30)
@@ -178,6 +181,13 @@ already paid through the shared budget; the host replays the client's builds at 
     the player's).
 - Animals can only be placed inside an exhibit. Adopting one is a placement (`elephant/m`), replayed
   like the others.
+- **Moving** (protocol 7). In Zoo Tycoon only animals and staff can be picked up (the type's byte
+  `+0x55`; buildings can't be moved, only sold). `ZTMapView::pickUpSelectedEntity` (0x46ab75) takes
+  the selected entity (`mapview+0x438`); the drop is a `placeEntityOnMap` of the same entity. Coop
+  detours the pick-up to remember the entity and where it was, and reports the drop as
+  `Moved(from, to)` instead of a new placement (so the other copy doesn't get a second keeper).
+  Staff and animals walk on each copy on their own, so the replay takes the entity of that type
+  *nearest* `from`, then selects it, picks it up and drops it at `to` like the player.
 
 ## Our changes to openzt (branch `zoo-together`)
 
@@ -242,7 +252,24 @@ it). The script handles both. Output: `vendor\openzt\target\i686-pc-windows-msvc
   turns it on) did not work with posted clicks; it seems to pick the object under the *real* mouse,
   not checked. The lab sells through the game's sell path from Lua instead (`coop_test_sell`).
 
-### Results, exhibits and animals (2026-10-30 08:26-, private\lab-results\*-summary.md)
+### Results, protocol 7 (2026-10-30 08:58-, private\lab-results\*-summary.md)
+
+New checks: `move_c2h` (the client picks up the keeper it hired through the game's pick-up and drops
+it with a posted click at the fake mouse; the host's nearest keeper ends at the drop point: client
+`keeper/m@1388,2582 -> 1456,2672`, host `keeper/m@1456,2672`) and `exhibit_h2c` (the host builds its
+own exhibit; both copies end with 2 exhibits and the same 30 fence pieces). Normal 08:58 24/24 and
+`no_move` caught (only `move_c2h` fails). `build_drawn` now looks again for up to 3 s, since a capture
+can be stale.
+
+Full suite 09:30-09:52 (summary `20261030-095231-summary.md`): both normal runs 25/25; `nojoin`,
+`drop_spend`, `no_date`, `no_cursor`, `no_remove`, `no_admission`, `no_move` caught. Fixed on the way:
+under `nojoin` the new in-zoo steps clicked the client's main menu and timed out (they are now
+recorded as failed and skipped when the join failed); the exhibit check now compares only the pieces
+the drag added. `no_place` was marked FAIL because `exhibit_h2c` also failed: with the client's
+exhibit missing on the host, the copies number exhibits differently and the gate carries that name.
+That is a consequence of the mutant, so `no_place` now expects it; rerun 09:55 caught.
+
+### Results, exhibits and animals (2026-10-30 08:26-08:48)
 
 New checks: `exhibit_c2h` (the client scrolls the fence list to Low Stick Pole Fence, drags a 3x3 square
 with the fake mouse and answers its own name prompt; the host builds the 17 pieces, gets one exhibit,
@@ -354,8 +381,12 @@ stole the reply meant for the next command. Each request now has its own reply c
   undo, and **moving** an object (picking it up and dropping it goes through `placeEntityOnMap` but not
   through `removeEntityFromMap`, so the other copy probably gets a second one instead of a move).
 - Two players building on the same tile at the same moment are not reconciled (no host validation).
-- Exhibits: tested with one fence type and one 3x3 square, built by the client. Paths, tank exhibits,
-  water, terrain, and an exhibit built by the host are not tested. The exhibit's name is not synced
+- Exhibits: tested with one fence type, one 3x3 square built by each side. Paths, tank exhibits,
+  water and terrain are not tested.
+- Moves: tested with one keeper picked up through the game's function (not a mouse click on the
+  walking keeper) by the client. If several entities of that type are close together, the replay may
+  move a different one than the player did. A pick-up while the replaying player is carrying
+  something of their own is untested. The exhibit's name is not synced
   (the replaying copy keeps the default "Exhibit N" for the exhibit itself).
 - Animals: tested with one adoption (African Elephant) by the client. After placement each copy
   simulates the animal on its own, so escapes, deaths, births and happiness diverge, and their
