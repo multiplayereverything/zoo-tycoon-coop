@@ -1,7 +1,7 @@
 From beed50b7f5098f3cbb80e31447184686bcd50973 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 01:22:29 +0200
-Subject: [PATCH 1/3] ZooTogether: host-authoritative shared budget over TCP
+Subject: [PATCH 1/4] ZooTogether: host-authoritative shared budget over TCP
  (coop feature)
 
 - coop.rs: session, framed wire protocol, client/host spend ledgers, Lua commands
@@ -830,7 +830,7 @@ index b81a048..260db83 100644
 From e8c69374d76e8860a39f03cf99191bf42b78d805 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 03:31:53 +0200
-Subject: [PATCH 2/3] ZooTogether protocol 2: join-in-progress zoo transfer,
+Subject: [PATCH 2/4] ZooTogether protocol 2: join-in-progress zoo transfer,
  date and pause sync
 
 - Host saves its zoo through SAVE_GAME (save dialog detoured to a fixed path) and streams it in
@@ -1833,7 +1833,7 @@ index 1ec6ce8..909a1f4 100644
 From 0451b17ae2cc9fd5a5004d7f9081254fde9ddfc8 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 05:16:29 +0200
-Subject: [PATCH 3/3] ZooTogether protocol 3: player cursors
+Subject: [PATCH 3/4] ZooTogether protocol 3: player cursors
 
 - Cursor message (world position, 10 Hz max, on change) both ways
 - Screen<->world via ZTMapView/BFMap camera origin and virtualToWorld/worldToVirtual
@@ -2219,6 +2219,321 @@ index c52bee2..5fc2ef0 100644
          round_trip(Msg::Keepalive);
      }
  
+-- 
+2.56.0.windows.3
+
+
+From c79f2687e6163315b58e09882bc8d7a353ad8420 Mon Sep 17 00:00:00 2001
+From: multiplayereverything <multiplayereverythingofficial@gmail.com>
+Date: Fri, 30 Oct 2026 06:31:20 +0200
+Subject: [PATCH 4/4] ZooTogether protocol 4: building sync (placements both
+ ways)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ openzt/src/coop.rs       | 166 ++++++++++++++++++++++++++++++++++++++-
+ openzt/src/roofs.rs      |   5 ++
+ openzt/src/ztworldmgr.rs |   7 ++
+ 3 files changed, 176 insertions(+), 2 deletions(-)
+
+diff --git a/openzt/src/coop.rs b/openzt/src/coop.rs
+index 5fc2ef0..df4f618 100644
+--- a/openzt/src/coop.rs
++++ b/openzt/src/coop.rs
+@@ -36,7 +36,7 @@ use tracing::{error, info, warn};
+ 
+ use crate::{globals::globals, lua_fn};
+ 
+-pub const PROTOCOL_VERSION: u16 = 3;
++pub const PROTOCOL_VERSION: u16 = 4;
+ pub const DEFAULT_PORT: u16 = 27150;
+ const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(200);
+ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
+@@ -61,9 +61,21 @@ pub enum Msg {
+     ZooLoaded { ok: bool },
+     /// The sender's mouse position on the map, in world units (`None`: not over the map).
+     Cursor(Option<[i32; 3]>),
++    /// An object was built on the sender's copy.
++    Placed(Placement),
+     Keepalive,
+ }
+ 
++/// A placed object: its type (by `zt_type`/`zt_sub_type`, the same strings on every copy), world
++/// position and rotation.
++#[derive(Debug, Clone, PartialEq, Default)]
++pub struct Placement {
++    pub zt_type: String,
++    pub zt_sub_type: String,
++    pub pos: [i32; 3],
++    pub rotation: i32,
++}
++
+ #[derive(Debug, Clone, Copy, PartialEq, Default)]
+ pub struct WorldState {
+     pub seq: u32,
+@@ -82,6 +94,7 @@ const T_PAUSE: u8 = 5;
+ const T_ZOO_CHUNK: u8 = 6;
+ const T_ZOO_LOADED: u8 = 7;
+ const T_CURSOR: u8 = 8;
++const T_PLACED: u8 = 9;
+ 
+ pub const ROLE_HOST: u8 = 1;
+ pub const ROLE_CLIENT: u8 = 2;
+@@ -131,6 +144,17 @@ impl Msg {
+                     b.extend_from_slice(&v.to_le_bytes());
+                 }
+             }
++            Msg::Placed(pl) => {
++                b.push(T_PLACED);
++                for v in pl.pos.iter().chain([pl.rotation].iter()) {
++                    b.extend_from_slice(&v.to_le_bytes());
++                }
++                for s in [&pl.zt_type, &pl.zt_sub_type] {
++                    let bytes = &s.as_bytes()[..s.len().min(255)];
++                    b.push(bytes.len() as u8);
++                    b.extend_from_slice(bytes);
++                }
++            }
+             Msg::Keepalive => b.push(T_KEEPALIVE),
+         }
+         let mut out = Vec::with_capacity(4 + b.len());
+@@ -169,6 +193,24 @@ impl Msg {
+                 let w = [u32_at(1)? as i32, u32_at(5)? as i32, u32_at(9)? as i32];
+                 Some(Msg::Cursor(bool_at(0)?.then_some(w)))
+             }
++            T_PLACED if p.len() >= 18 => {
++                let i32_at = |i: usize| u32_at(i).map(|v| v as i32);
++                let mut at = 16;
++                let mut text = || {
++                    let n = *p.get(at)? as usize;
++                    let s = String::from_utf8(p.get(at + 1..at + 1 + n)?.to_vec()).ok()?;
++                    at += 1 + n;
++                    Some(s)
++                };
++                let (zt_type, zt_sub_type) = (text()?, text()?);
++                (at == p.len()).then_some(())?;
++                Some(Msg::Placed(Placement {
++                    zt_type,
++                    zt_sub_type,
++                    pos: [i32_at(0)?, i32_at(4)?, i32_at(8)?],
++                    rotation: i32_at(12)?,
++                }))
++            }
+             T_KEEPALIVE if p.is_empty() => Some(Msg::Keepalive),
+             _ => None,
+         }
+@@ -419,6 +461,8 @@ struct Stats {
+     pauses_applied: u32,
+     zoo_bytes: u32,
+     cursors_sent: u32,
++    places_sent: u32,
++    places_applied: u32,
+     last_host_cash: f32,
+     last_error: String,
+ }
+@@ -534,7 +578,7 @@ fn status() -> String {
+     with_session(|s| {
+         let cash = game_cash().map(|c| format!("{c:.2}")).unwrap_or_else(|| "none".into());
+         format!(
+-            "role={:?} connected={} world_ready={} in_game={} paused={} date={} cash={} host_cash={:.2} snapshots_sent={} snapshots_applied={} spends_sent={} spends_applied={} pauses_sent={} pauses_applied={} zoo_bytes={} pending={} local_cursor={} remote_cursor={} remote_screen={} cursors_sent={} cursors_drawn={} last_error={}",
++            "role={:?} connected={} world_ready={} in_game={} paused={} date={} cash={} host_cash={:.2} snapshots_sent={} snapshots_applied={} spends_sent={} spends_applied={} pauses_sent={} pauses_applied={} zoo_bytes={} pending={} local_cursor={} remote_cursor={} remote_screen={} cursors_sent={} cursors_drawn={} places_sent={} places_applied={} last_placed={} last_error={}",
+             s.role,
+             s.peer_ok,
+             s.world_ready,
+@@ -556,6 +600,9 @@ fn status() -> String {
+             s.remote_cursor.and_then(world_to_screen).map(|(x, y)| format!("{x},{y}")).unwrap_or_else(|| "none".into()),
+             s.stats.cursors_sent,
+             CURSORS_DRAWN.load(Ordering::Relaxed),
++            s.stats.places_sent,
++            s.stats.places_applied,
++            LAST_PLACED.lock().unwrap().as_ref().map(fmt_placement).unwrap_or_else(|| "none".into()),
+             if s.stats.last_error.is_empty() { "-" } else { &s.stats.last_error }
+         )
+     })
+@@ -697,6 +744,19 @@ pub fn tick() {
+                 }
+             }
+             NetEvent::Msg(Msg::Cursor(c)) => s.remote_cursor = c,
++            NetEvent::Msg(Msg::Placed(pl)) => {
++                // The client only builds once it has the host's zoo; the host builds whatever the
++                // client reports (no validation yet: both copies saw the same placement succeed).
++                if s.role == Role::Host || s.world_ready {
++                    match place_entity(&pl) {
++                        Ok(_) => s.stats.places_applied += 1,
++                        Err(e) => {
++                            warn!("coop: remote placement failed: {e}");
++                            s.stats.last_error = e;
++                        }
++                    }
++                }
++            }
+             NetEvent::Msg(Msg::ZooLoaded { ok }) if s.role == Role::Host => {
+                 info!("coop: client loaded the zoo: {ok}");
+             }
+@@ -738,6 +798,13 @@ pub fn tick() {
+         host_tick(s);
+     }
+     cursor_tick(s);
++    let placed: Vec<Placement> = PENDING_PLACED.lock().unwrap().drain(..).collect();
++    let ready = s.peer_ok && (s.role == Role::Host || s.world_ready);
++    for pl in placed {
++        if ready && !mutant("no_place") && s.send(Msg::Placed(pl)) {
++            s.stats.places_sent += 1;
++        }
++    }
+ }
+ 
+ /// Both roles: send this player's map cursor when it changes, at most every 100 ms.
+@@ -999,6 +1066,90 @@ fn draw_remote_cursor(videomgr: *const i32) {
+     CURSORS_DRAWN.fetch_add(1, Ordering::Relaxed);
+ }
+ 
++// --- building -------------------------------------------------------------------------------
++//
++// A purchase: the buy menu puts a freshly created entity on the cursor (`ZTMapView::setTempEntity`)
++// and the map click calls `ZTMapView::placeEntityOnMap(entity, cost, 0)` (0x4d9088, called from the
++// left-button-up handler 0x4d871e), which returns the placed entity. openzt's `roofs.rs` detours that
++// function and calls [`on_entity_placed`]. To replay a placement, [`place_entity`] does the same:
++// `BFEntityType::create`, rotation at entity `+0x12c`, `setWorldPos` (x, y, z at `+0x114`),
++// `snapToGrid`, then `placeEntityOnMap` with no cost.
++
++static PENDING_PLACED: Mutex<Vec<Placement>> = Mutex::new(Vec::new());
++static LAST_PLACED: Mutex<Option<Placement>> = Mutex::new(None);
++/// Set while this copy replays a remote placement, so the hook doesn't send it back.
++static APPLYING_REMOTE: AtomicBool = AtomicBool::new(false);
++
++fn fmt_placement(p: &Placement) -> String {
++    format!("{}/{}@{},{},{}r{}", p.zt_type, p.zt_sub_type, p.pos[0], p.pos[1], p.pos[2], p.rotation)
++}
++
++fn read_i32(addr: u32) -> i32 {
++    unsafe { *(addr as *const i32) }
++}
++
++fn type_key(type_ptr: u32) -> (String, String) {
++    use crate::util::get_string_from_memory;
++    (get_string_from_memory(read_i32(type_ptr + 0x98) as u32), get_string_from_memory(read_i32(type_ptr + 0xa4) as u32))
++}
++
++/// Called (game thread) after the player placed an object on this copy.
++pub fn on_entity_placed(entity: u32) {
++    if APPLYING_REMOTE.load(Ordering::Relaxed) {
++        return;
++    }
++    let type_ptr = read_i32(entity + 0x128) as u32;
++    if type_ptr == 0 {
++        return;
++    }
++    let (zt_type, zt_sub_type) = type_key(type_ptr);
++    let pl = Placement {
++        zt_type,
++        zt_sub_type,
++        pos: [read_i32(entity + 0x114), read_i32(entity + 0x118), read_i32(entity + 0x11c)],
++        rotation: read_i32(entity + 0x12c),
++    };
++    info!("coop: placed {}", fmt_placement(&pl));
++    *LAST_PLACED.lock().unwrap() = Some(pl.clone());
++    PENDING_PLACED.lock().unwrap().push(pl);
++}
++
++/// Builds `pl` on this copy the way a purchase does (no cost: the buyer's copy already paid).
++fn place_entity(pl: &Placement) -> Result<u32, String> {
++    use openzt_detour::generated::{
++        bfentity::{SET_WORLD_POS, SNAP_TO_GRID}, bfoverlaytype::CREATE as BFENTITYTYPE_CREATE, ztmapview::PLACE_ENTITY_ON_MAP_1,
++        ztui_general::GET_MAPVIEW,
++    };
++    let type_ptr = crate::ztworldmgr::coop_entity_types()
++        .into_iter()
++        .find(|&t| type_key(t) == (pl.zt_type.clone(), pl.zt_sub_type.clone()))
++        .ok_or_else(|| format!("unknown type {}/{}", pl.zt_type, pl.zt_sub_type))?;
++    let mapview = unsafe { GET_MAPVIEW.original()() };
++    if mapview.is_null() {
++        return Err("no map view".into());
++    }
++    // `BFEntityType::create(this, flag)` (0x412669; openzt's table calls it `bfoverlaytype::CREATE`):
++    // `createEntity` (type vtable 0x5c) then the entity's `init(flag)` (entity vtable 0x108).
++    let entity = unsafe { BFENTITYTYPE_CREATE.original()(type_ptr as *const u32, false) } as u32;
++    if entity == 0 {
++        return Err("create returned null".into());
++    }
++    unsafe {
++        *((entity + 0x12c) as *mut i32) = pl.rotation;
++        SET_WORLD_POS.original()(entity as *const u32, pl.pos.as_ptr() as *const u32);
++        // `snapToGrid` fills the entity's screen position (+0xb4/+0xb8), which the buy cursor does
++        // while the player moves the building. Without it the entity is in the world but never drawn.
++        SNAP_TO_GRID.original()(entity as *const u32);
++    }
++    APPLYING_REMOTE.store(true, Ordering::Relaxed);
++    let placed = unsafe { PLACE_ENTITY_ON_MAP_1.hooked()(mapview, entity as *const u32, 0.0, 0) };
++    APPLYING_REMOTE.store(false, Ordering::Relaxed);
++    if placed.is_null() {
++        return Err(format!("placeEntityOnMap refused {}", fmt_placement(pl)));
++    }
++    Ok(placed as u32)
++}
++
+ // --- save / load ------------------------------------------------------------------------------
+ 
+ /// Path the next `SAVE_GAME` writes to instead of asking the player (see [`save_detours`]).
+@@ -1153,6 +1304,11 @@ pub fn init() {
+     lua_fn!("coop_world_to_screen", "ZooTogether lab: world position to client pixel", "coop_world_to_screen(x, y, z)", |x: i32, y: i32, z: i32| {
+         Ok(world_to_screen([x, y, z]).map(|(a, b)| format!("{a},{b}")).unwrap_or_else(|| "none".into()))
+     });
++    lua_fn!("coop_place", "ZooTogether: build type/subtype at world x, y, z with rotation", "coop_place(type, subtype, x, y, z, rot)",
++        |t: String, sub: String, x: i32, y: i32, z: i32, rot: i32| {
++            let pl = Placement { zt_type: t, zt_sub_type: sub, pos: [x, y, z], rotation: rot };
++            Ok(lua_result(place_entity(&pl).map(|e| format!("placed {} as {e:#x}", fmt_placement(&pl)))))
++        });
+     lua_fn!("coop_load_zoo", "ZooTogether: load a .zoo save or map file and enter the game", "coop_load_zoo(path)", |path: String| {
+         Ok(lua_result(load_zoo(&path)))
+     });
+@@ -1205,6 +1361,12 @@ mod tests {
+         round_trip(Msg::ZooLoaded { ok: true });
+         round_trip(Msg::Cursor(Some([1024, -64, 32])));
+         round_trip(Msg::Cursor(None));
++        round_trip(Msg::Placed(Placement {
++            zt_type: "scenery".into(),
++            zt_sub_type: "snackmachine".into(),
++            pos: [640, -128, 16],
++            rotation: 2,
++        }));
+         round_trip(Msg::Keepalive);
+     }
+ 
+diff --git a/openzt/src/roofs.rs b/openzt/src/roofs.rs
+index 436984e..897f7e0 100644
+--- a/openzt/src/roofs.rs
++++ b/openzt/src/roofs.rs
+@@ -56,6 +56,11 @@ pub mod roof_detours {
+             }
+         }
+ 
++        #[cfg(feature = "coop")]
++        if !result.is_null() {
++            crate::coop::on_entity_placed(result as u32);
++        }
++
+         result
+     }
+ 
+diff --git a/openzt/src/ztworldmgr.rs b/openzt/src/ztworldmgr.rs
+index 909a1f4..340a2d5 100644
+--- a/openzt/src/ztworldmgr.rs
++++ b/openzt/src/ztworldmgr.rs
+@@ -1325,6 +1325,13 @@ pub(crate) fn static_layout_fingerprint() -> (usize, u64) {
+     (items.len(), h.finish())
+ }
+ 
++/// ZooTogether co-op: every loaded entity type pointer.
++#[cfg(feature = "coop")]
++pub(crate) fn coop_entity_types() -> Vec<u32> {
++    let w = globals().ztworldmgr();
++    (w.entity_type_array_start..w.entity_type_array_end).step_by(4).map(get_from_memory::<u32>).collect()
++}
++
+ fn get_zt_world_mgr_entities_2(zt_world_mgr: &ZTWorldMgr) -> Vec<BFEntity> {
+     let entity_array_start = zt_world_mgr.entity_array_start;
+     let entity_array_end = zt_world_mgr.entity_array_end;
 -- 
 2.56.0.windows.3
 

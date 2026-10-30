@@ -167,3 +167,26 @@ def capture(pid, path):
     u32.ReleaseDC(hwnd, hdc)
     Image.frombuffer("RGBA", (w, h), buf, "raw", "BGRA", 0, 1).convert("RGB").save(path)
     return True
+
+
+WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP = 0x200, 0x201, 0x202
+WM_ACTIVATE, WM_ACTIVATEAPP = 0x6, 0x1C
+
+
+def click(pid, x, y, settle=0.6):
+    """Left-clicks client pixel (x, y) in the copy's window with posted messages.
+
+    Zoo Tycoon handles its mouse through window messages, so this works on a parked, unfocused
+    window and never moves the real mouse. It ignores the mouse while it thinks another app is
+    active (with two copies, the one started last is), so tell it first that it is active.
+    """
+    hwnd = windows_of(pid)[0]
+    lp = (y << 16) | (x & 0xFFFF)
+    u32.PostMessageW(hwnd, WM_ACTIVATEAPP, 1, 0)
+    u32.PostMessageW(hwnd, WM_ACTIVATE, 1, 0)
+    u32.PostMessageW(hwnd, WM_MOUSEMOVE, 0, lp)
+    time.sleep(0.2)
+    u32.PostMessageW(hwnd, WM_LBUTTONDOWN, 1, lp)
+    time.sleep(0.15)
+    u32.PostMessageW(hwnd, WM_LBUTTONUP, 0, lp)
+    time.sleep(settle)

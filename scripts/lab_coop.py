@@ -17,11 +17,18 @@ Checks, in order:
   cursor_projection  projecting that world position back on the client lands within 8 px of 400,300
   cursor_drawn   the host draws the client's cursor on its frames (FLIP detour counter rises)
   cursor_h2c     host's cursor arrives at the client
+  build_c2h      client buys a snack machine with real (posted) mouse clicks; the host builds it too and
+                 both copies' layouts match again
+  build_drawn    the host's screen changes where the client built (window capture before/after)
+  build_h2c      the host buys one with real clicks; the client builds it and the layouts match
 
 --mutant nojoin      client never joins          -> zoo_transfer..client_spend must FAIL
 --mutant drop_spend  host ignores client spends  -> client_spend must FAIL, the rest pass
 --mutant no_date     client ignores host date    -> date must FAIL
 --mutant no_cursor   client never sends its cursor -> cursor_c2h and cursor_drawn must FAIL
+--mutant no_place    client never sends its builds -> build_c2h and build_drawn must FAIL
+
+build_drawn needs Pillow; the lab looks for it in private/pylib (pip install --target private/pylib pillow).
 
 Writes private/lab-results/<timestamp>-<mutant>.json; exits 0 when the run's expectation holds.
 """
@@ -35,10 +42,11 @@ import socket
 import sys
 import time
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.join(ROOT, "private", "pylib"))
 import zt_launch  # noqa: E402
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOST_DIR = os.path.join(ROOT, "private", "lab-host")
 CLIENT_DIR = os.path.join(ROOT, "private", "lab-client")
 HOST_CONSOLE = ("127.0.0.1", 8181)
@@ -47,16 +55,23 @@ COOP_PORT = 27150
 MAP = "maps\\default.zoo"
 
 ALL_CHECKS = ["zoo_transfer", "layout", "cash_join", "host_change", "client_spend", "no_double", "date",
-              "host_pause", "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn"]
+              "host_pause", "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
+              "build_c2h", "build_drawn", "build_h2c"]
 CURSOR_CHECKS = {"cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn"}
 EXPECTED_FAIL = {
     None: set(),
     "nojoin": {"zoo_transfer", "layout", "cash_join", "host_change", "client_spend", "date", "host_pause",
-               "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn"},
+               "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
+               "build_c2h", "build_drawn", "build_h2c"},
     "drop_spend": {"client_spend"},
     "no_date": {"date"},
     "no_cursor": {"cursor_c2h", "cursor_drawn"},
+    "no_place": {"build_c2h", "build_drawn"},
 }
+# Buy menu: the Buildings button, then a free grass pixel; the first item (Snack Machine) is selected.
+BUILDINGS_BUTTON = (25, 125)
+CLIENT_BUILD_AT = (600, 150)
+HOST_BUILD_AT = (450, 110)
 
 
 def lua(addr, code, timeout=30.0):
@@ -121,7 +136,7 @@ def run(args, results):
     pids = results["pids"]
     base_env = {"OPENZT_NO_CONSOLE": "1"}
     client_env = dict(base_env)
-    if args.mutant in ("no_date", "no_cursor"):
+    if args.mutant in ("no_date", "no_cursor", "no_place"):
         client_env["ZT_COOP_MUTANT"] = args.mutant
     host_env = dict(base_env)
     if args.mutant == "drop_spend":
@@ -226,13 +241,58 @@ def run(args, results):
         lambda: status(CLIENT_CONSOLE).get("remote_cursor") == h_local, 3))
     results["cursor"] = {"client_local": c_local, "client_projection": back, "host_local": h_local}
 
+    # Building, client -> host: a real purchase through the buy menu with posted mouse clicks.
+    host_pid, client_pid = pids
+    shot = os.path.join(ROOT, "private", "lab-results", "_build.png")
+    os.makedirs(os.path.dirname(shot), exist_ok=True)
+
+    def host_region():
+        from PIL import Image
+        zt_launch.capture(host_pid, shot)
+        x, y = CLIENT_BUILD_AT
+        with Image.open(shot) as im:
+            return list(im.crop((x - 40, y - 60, x + 40, y + 20)).getdata())
+
+    before = host_region()
+    applied0 = int(status(HOST_CONSOLE).get("places_applied", 0))
+    zt_launch.click(client_pid, *BUILDINGS_BUTTON)
+    zt_launch.click(client_pid, *CLIENT_BUILD_AT)
+    c_placed = status(CLIENT_CONSOLE).get("last_placed")
+    got = wait_until(lambda: int(status(HOST_CONSOLE).get("places_applied", 0)) > applied0, 3)
+    time.sleep(0.5)
+    layouts = {a[1]: lua(a, "return coop_layout()") for a in (HOST_CONSOLE, CLIENT_CONSOLE)}
+    checks["build_c2h"] = bool(c_placed not in (None, "none") and got and layouts[8181] == layouts[8182])
+    after = host_region()
+    changed = sum(1 for a, b in zip(before, after) if sum(abs(i - j) for i, j in zip(a, b)) > 60)
+    checks["build_drawn"] = checks["build_c2h"] and changed > 200
+    results["build"] = {"client_placed": c_placed, "host_layout": layouts[8181], "client_layout": layouts[8182],
+                        "host_pixels_changed": changed}
+
+    def count(layout):
+        m = re.search(r"count=(\d+)", layout)
+        return int(m.group(1)) if m else -1
+
+    applied0 = int(status(CLIENT_CONSOLE).get("places_applied", 0))
+    client_count0 = count(layouts[8182])
+    zt_launch.click(host_pid, *BUILDINGS_BUTTON)
+    zt_launch.click(host_pid, *HOST_BUILD_AT)
+    h_placed = status(HOST_CONSOLE).get("last_placed")
+    got = wait_until(lambda: int(status(CLIENT_CONSOLE).get("places_applied", 0)) > applied0, 3)
+    time.sleep(0.5)
+    layouts = {a[1]: lua(a, "return coop_layout()") for a in (HOST_CONSOLE, CLIENT_CONSOLE)}
+    # Equal layouts only if the client's build reached the host (not under the no_place mutant).
+    checks["build_h2c"] = bool(h_placed not in (None, "none") and h_placed != c_placed and got
+                               and count(layouts[8182]) == client_count0 + 1
+                               and (layouts[8181] == layouts[8182] or not checks["build_c2h"]))
+    results["build"].update(host_placed=h_placed, host_layout_2=layouts[8181], client_layout_2=layouts[8182])
+
     results["status"] = {"host": lua(HOST_CONSOLE, "return coop_status()"),
                          "client": lua(CLIENT_CONSOLE, "return coop_status()")}
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mutant", choices=["nojoin", "drop_spend", "no_date", "no_cursor"], default=None)
+    ap.add_argument("--mutant", choices=["nojoin", "drop_spend", "no_date", "no_cursor", "no_place"], default=None)
     ap.add_argument("--keep", action="store_true", help="leave the copies running")
     ap.add_argument("--shots", action="store_true", help="save window captures (needs Pillow)")
     args = ap.parse_args()
