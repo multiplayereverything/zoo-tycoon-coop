@@ -1,7 +1,7 @@
 From beed50b7f5098f3cbb80e31447184686bcd50973 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 01:22:29 +0200
-Subject: [PATCH 1/6] ZooTogether: host-authoritative shared budget over TCP
+Subject: [PATCH 1/7] ZooTogether: host-authoritative shared budget over TCP
  (coop feature)
 
 - coop.rs: session, framed wire protocol, client/host spend ledgers, Lua commands
@@ -830,7 +830,7 @@ index b81a048..260db83 100644
 From e8c69374d76e8860a39f03cf99191bf42b78d805 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 03:31:53 +0200
-Subject: [PATCH 2/6] ZooTogether protocol 2: join-in-progress zoo transfer,
+Subject: [PATCH 2/7] ZooTogether protocol 2: join-in-progress zoo transfer,
  date and pause sync
 
 - Host saves its zoo through SAVE_GAME (save dialog detoured to a fixed path) and streams it in
@@ -1833,7 +1833,7 @@ index 1ec6ce8..909a1f4 100644
 From 0451b17ae2cc9fd5a5004d7f9081254fde9ddfc8 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 05:16:29 +0200
-Subject: [PATCH 3/6] ZooTogether protocol 3: player cursors
+Subject: [PATCH 3/7] ZooTogether protocol 3: player cursors
 
 - Cursor message (world position, 10 Hz max, on change) both ways
 - Screen<->world via ZTMapView/BFMap camera origin and virtualToWorld/worldToVirtual
@@ -2226,7 +2226,7 @@ index c52bee2..5fc2ef0 100644
 From c79f2687e6163315b58e09882bc8d7a353ad8420 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 06:31:20 +0200
-Subject: [PATCH 4/6] ZooTogether protocol 4: building sync (placements both
+Subject: [PATCH 4/7] ZooTogether protocol 4: building sync (placements both
  ways)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -2541,7 +2541,7 @@ index 909a1f4..340a2d5 100644
 From 4ca25cb39daa9728012c4a5adf0e22fadf19624b Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 07:01:23 +0200
-Subject: [PATCH 5/6] ZooTogether protocol 5: removal sync; re-entrancy-safe
+Subject: [PATCH 5/7] ZooTogether protocol 5: removal sync; re-entrancy-safe
  console and coop tick
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -2918,7 +2918,7 @@ index 340a2d5..ad6935b 100644
 From dcf6482a19e874e32e6b1be3f9d8552db4f096c7 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 07:18:28 +0200
-Subject: [PATCH 6/6] ZooTogether protocol 6: admission price sync
+Subject: [PATCH 6/7] ZooTogether protocol 6: admission price sync
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -3167,6 +3167,278 @@ index b3fac1a..546ae16 100644
      }
  
      /// `ZooStatus_showPrices.asm` (read in full) never touches the incoming `this`/ECX past its
+-- 
+2.56.0.windows.3
+
+
+From a1b063018e7a4298a9f25ec55182ef462e5716fb Mon Sep 17 00:00:00 2001
+From: multiplayereverything <multiplayereverythingofficial@gmail.com>
+Date: Fri, 30 Oct 2026 08:48:36 +0200
+Subject: [PATCH 7/7] ZooTogether: exhibits and animals (fence replay position,
+ name prompt, gate reconcile), lab fake mouse
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ openzt/src/coop.rs  | 144 +++++++++++++++++++++++++++++++++++++++++++-
+ openzt/src/roofs.rs |   6 +-
+ 2 files changed, 144 insertions(+), 6 deletions(-)
+
+diff --git a/openzt/src/coop.rs b/openzt/src/coop.rs
+index b9b25be..bd35cf3 100644
+--- a/openzt/src/coop.rs
++++ b/openzt/src/coop.rs
+@@ -595,7 +595,7 @@ fn status() -> String {
+     with_session(|s| {
+         let cash = game_cash().map(|c| format!("{c:.2}")).unwrap_or_else(|| "none".into());
+         format!(
+-            "role={:?} connected={} world_ready={} in_game={} paused={} date={} cash={} host_cash={:.2} snapshots_sent={} snapshots_applied={} spends_sent={} spends_applied={} pauses_sent={} pauses_applied={} zoo_bytes={} pending={} local_cursor={} remote_cursor={} remote_screen={} cursors_sent={} cursors_drawn={} places_sent={} places_applied={} last_placed={} removes_sent={} removes_applied={} last_removed={} admission={} admissions_sent={} admissions_applied={} last_error={}",
++            "role={:?} connected={} world_ready={} in_game={} paused={} date={} cash={} host_cash={:.2} snapshots_sent={} snapshots_applied={} spends_sent={} spends_applied={} pauses_sent={} pauses_applied={} zoo_bytes={} pending={} local_cursor={} remote_cursor={} remote_screen={} cursors_sent={} cursors_drawn={} places_sent={} places_applied={} last_placed={} removes_sent={} removes_applied={} last_removed={} admission={} admissions_sent={} admissions_applied={} exhibits={} last_error={}",
+             s.role,
+             s.peer_ok,
+             s.world_ready,
+@@ -626,6 +626,7 @@ fn status() -> String {
+             admission().map(|a| format!("{a:.2}")).unwrap_or_else(|| "none".into()),
+             s.stats.admissions_sent,
+             s.stats.admissions_applied,
++            if in_game() { globals().zthabitatmgr().exhibit_array().len() } else { 0 },
+             if s.stats.last_error.is_empty() { "-" } else { &s.stats.last_error }
+         )
+     })
+@@ -845,6 +846,7 @@ pub fn tick() {
+         host_tick(s);
+     }
+     cursor_tick(s);
++    revert_auto_gates();
+     let placed: Vec<Placement> = PENDING_PLACED.lock().unwrap().drain(..).collect();
+     let ready = s.peer_ok && (s.role == Role::Host || s.world_ready);
+     for pl in placed {
+@@ -951,12 +953,15 @@ fn host_tick(s: &mut Session) {
+ unsafe extern "system" {
+     fn GetCursorPos(p: *mut [i32; 2]) -> i32;
+     fn ScreenToClient(hwnd: isize, p: *mut [i32; 2]) -> i32;
++    fn ClientToScreen(hwnd: isize, p: *mut [i32; 2]) -> i32;
+     fn EnumThreadWindows(thread: u32, f: unsafe extern "system" fn(isize, isize) -> i32, l: isize) -> i32;
+     fn IsWindowVisible(hwnd: isize) -> i32;
+ }
+ #[link(name = "kernel32")]
+ unsafe extern "system" {
+     fn GetCurrentThreadId() -> u32;
++    fn GetModuleHandleA(name: *const std::ffi::c_char) -> isize;
++    fn GetProcAddress(module: isize, name: *const std::ffi::c_char) -> usize;
+ }
+ #[link(name = "gdi32")]
+ unsafe extern "system" {
+@@ -1077,6 +1082,42 @@ fn local_cursor_world() -> Option<[i32; 3]> {
+     screen_to_world(px, py)
+ }
+ 
++// --- lab: fake mouse -----------------------------------------------------------------------------
++//
++// The lab drives parked, unfocused copies with posted mouse messages. Clicks use the message's
++// position, but dragging (fences, paths) and picking an object under the mouse (bulldozer) read the
++// real mouse through `GetCursorPos`. With `ZT_LAB_FAKE_MOUSE=1` that function answers with the lab's
++// `coop_test_cursor` position (in the game window's client area) whenever one is set. Real players
++// never set the variable, so nothing changes for them.
++
++type GetCursorPosFn = unsafe extern "system" fn(*mut [i32; 2]) -> i32;
++static FAKE_MOUSE_HOOK: std::sync::OnceLock<retour::GenericDetour<GetCursorPosFn>> = std::sync::OnceLock::new();
++
++unsafe extern "system" fn fake_get_cursor_pos(p: *mut [i32; 2]) -> i32 {
++    // try_lock: `local_cursor_world` holds this lock while it calls GetCursorPos.
++    let fake = TEST_CURSOR.try_lock().ok().and_then(|g| *g);
++    if let Some((x, y)) = fake {
++        let hwnd = game_hwnd();
++        let mut q = [x, y];
++        if hwnd != 0 && unsafe { ClientToScreen(hwnd, &mut q) } != 0 {
++            unsafe { *p = q };
++            return 1;
++        }
++    }
++    unsafe { FAKE_MOUSE_HOOK.get().expect("installed").call(p) }
++}
++
++fn install_fake_mouse() -> Result<(), String> {
++    let addr = unsafe { GetProcAddress(GetModuleHandleA(c"user32.dll".as_ptr()), c"GetCursorPos".as_ptr()) };
++    if addr == 0 {
++        return Err("GetCursorPos not found".into());
++    }
++    let target: GetCursorPosFn = unsafe { std::mem::transmute(addr) };
++    let hook = unsafe { retour::GenericDetour::new(target, fake_get_cursor_pos as GetCursorPosFn) }.map_err(|e| format!("{e:?}"))?;
++    let hook = FAKE_MOUSE_HOOK.get_or_init(|| hook);
++    unsafe { hook.enable() }.map_err(|e| format!("{e:?}"))
++}
++
+ /// `GXVideoManager::flip` (0x4013bf) presents the back buffer (`videomgr+0x20`, an
+ /// `IDirectDrawSurface`): `Flip` in fullscreen, `Blt` to the primary in windowed mode. Drawing the
+ /// other player's cursor on the back buffer right before that puts it on top of the finished frame.
+@@ -1199,9 +1240,19 @@ fn placement_of(entity: u32) -> Option<Placement> {
+     })
+ }
+ 
+-/// Called (game thread) after the player placed an object on this copy.
++/// Nesting depth of `placeEntityOnMap` calls (game thread). Closing an exhibit's fence makes the game
++/// place a gate inside the same call; each copy does that on its own, so only the outermost placement
++/// (the player's) is sent.
++static PLACE_DEPTH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
++
++pub fn placement_begin() {
++    PLACE_DEPTH.fetch_add(1, Ordering::Relaxed);
++}
++
++/// Called (game thread) when a `placeEntityOnMap` returns (`entity` 0: refused).
+ pub fn on_entity_placed(entity: u32) {
+-    if APPLYING_REMOTE.load(Ordering::Relaxed) {
++    let outermost = PLACE_DEPTH.fetch_sub(1, Ordering::Relaxed) == 1;
++    if entity == 0 || !outermost || APPLYING_REMOTE.load(Ordering::Relaxed) {
+         return;
+     }
+     let Some(pl) = placement_of(entity) else { return };
+@@ -1210,6 +1261,73 @@ pub fn on_entity_placed(entity: u32) {
+     PENDING_PLACED.lock().unwrap().push(pl);
+ }
+ 
++/// Closing an exhibit's fence calls `ZTHabitatMgr::nameHabitat` (0x44e43e, from 0x487961), which
++/// opens the modal "New Exhibit Name" prompt. When the closing fence piece is a replay, the prompt
++/// would appear for the other player and stall their copy, so it is skipped there.
++#[detour_mod]
++mod habitat_detours {
++    use openzt_detour::generated::zthabitatmgr::{NAME_HABITAT, REPLACE_FENCE_WITH_GATE};
++
++    #[detour(NAME_HABITAT)]
++    unsafe extern "thiscall" fn name_habitat(mgr: *const u32, habitat: *const u32) {
++        if !super::APPLYING_REMOTE.load(std::sync::atomic::Ordering::Relaxed) {
++            unsafe { NAME_HABITAT_DETOUR.call(mgr, habitat) }
++        }
++    }
++
++    /// A newly closed exhibit gets a gate: some frames later the game turns one of its fence pieces
++    /// into a gate (`replaceFenceWithGate`, not through `placeEntityOnMap`), apparently on the side
++    /// nearest the mouse, so two copies can pick different sides. The player's copy sends its gate as
++    /// a placement; on the replaying copy a gate made from a replayed fence is noted here and turned
++    /// back into fence by [`super::revert_auto_gates`].
++    #[detour(REPLACE_FENCE_WITH_GATE)]
++    unsafe extern "thiscall" fn replace_fence_with_gate(mgr: *const u32, fence: *const u32) -> u32 {
++        if !super::REMOTE_FENCES.lock().unwrap().contains(&(fence as u32)) {
++            return unsafe { REPLACE_FENCE_WITH_GATE_DETOUR.call(mgr, fence) };
++        }
++        let before = super::gates();
++        let r = unsafe { REPLACE_FENCE_WITH_GATE_DETOUR.call(mgr, fence) };
++        let added = super::gates().into_iter().filter(|g| !before.contains(g));
++        super::AUTO_GATES.lock().unwrap().extend(added);
++        r
++    }
++}
++
++/// Gates this copy made on its own out of replayed fence (see `habitat_detours`).
++static AUTO_GATES: Mutex<Vec<u32>> = Mutex::new(Vec::new());
++/// Entities this copy placed as replays.
++static REMOTE_FENCES: Mutex<Vec<u32>> = Mutex::new(Vec::new());
++
++/// Turns the gates in [`AUTO_GATES`] back into fence (game thread, from [`tick`]).
++fn revert_auto_gates() {
++    use openzt_detour::generated::zthabitatmgr::REPLACE_GATE_WITH_FENCE;
++    let own: Vec<u32> = AUTO_GATES.lock().unwrap().drain(..).collect();
++    if own.is_empty() {
++        return;
++    }
++    use openzt_detour::generated::bfentity::CREATE_NAME;
++    let present = gates();
++    APPLYING_REMOTE.store(true, Ordering::Relaxed);
++    for gate in own.into_iter().filter(|g| present.contains(g)) {
++        unsafe { REPLACE_GATE_WITH_FENCE.original()(gate as *const i32) };
++        // A gate carries its exhibit's name (string at +0x108..+0x114). Move it to the gate the
++        // player's copy sent, and give the piece that is fence again its type's name back.
++        let sent_gate = REMOTE_FENCES.lock().unwrap().iter().rev().copied().find(|e| present.contains(e) || gates().contains(e));
++        if let Some(sent_gate) = sent_gate.filter(|&e| e != gate) {
++            unsafe {
++                std::ptr::swap((gate + 0x108) as *mut [u32; 3], (sent_gate + 0x108) as *mut [u32; 3]);
++                CREATE_NAME.original()(gate as *const u32);
++            }
++        }
++    }
++    APPLYING_REMOTE.store(false, Ordering::Relaxed);
++}
++
++/// Fence pieces with sub-type `g` are gates.
++fn gates() -> Vec<u32> {
++    crate::ztworldmgr::coop_static_entities().into_iter().filter(|&e| placement_of(e).is_some_and(|p| p.zt_sub_type == "g")).collect()
++}
++
+ /// Builds `pl` on this copy the way a purchase does (no cost: the buyer's copy already paid).
+ fn place_entity(pl: &Placement) -> Result<u32, String> {
+     use openzt_detour::generated::{
+@@ -1236,6 +1354,8 @@ fn place_entity(pl: &Placement) -> Result<u32, String> {
+         // `snapToGrid` fills the entity's screen position (+0xb4/+0xb8), which the buy cursor does
+         // while the player moves the building. Without it the entity is in the world but never drawn.
+         SNAP_TO_GRID.original()(entity as *const u32);
++        // snapToGrid also moves edge objects (fences) half a tile; put them back where they were.
++        SET_WORLD_POS.original()(entity as *const u32, pl.pos.as_ptr() as *const u32);
+     }
+     APPLYING_REMOTE.store(true, Ordering::Relaxed);
+     let placed = unsafe { PLACE_ENTITY_ON_MAP_1.hooked()(mapview, entity as *const u32, 0.0, 0) };
+@@ -1243,6 +1363,7 @@ fn place_entity(pl: &Placement) -> Result<u32, String> {
+     if placed.is_null() {
+         return Err(format!("placeEntityOnMap refused {}", fmt_placement(pl)));
+     }
++    REMOTE_FENCES.lock().unwrap().push(placed as u32);
+     Ok(placed as u32)
+ }
+ 
+@@ -1437,6 +1558,12 @@ pub fn init() {
+     if let Err(e) = unsafe { removal_detours::init_detours() } {
+         error!("coop: failed to install removal detour: {e:?}");
+     }
++    if let Err(e) = unsafe { habitat_detours::init_detours() } {
++        error!("coop: failed to install habitat detour: {e:?}");
++    }
++    if std::env::var("ZT_LAB_FAKE_MOUSE").is_ok_and(|v| v == "1") && let Err(e) = install_fake_mouse() {
++        error!("coop: failed to install the lab's fake mouse: {e}");
++    }
+ 
+     lua_fn!("coop_host", "ZooTogether: host a co-op session", "coop_host([port])", |port: Option<u16>| {
+         Ok(lua_result(host(port.unwrap_or(DEFAULT_PORT))))
+@@ -1520,6 +1647,17 @@ pub fn init() {
+             unsafe { SET_ADULT_ADMISSION_PRICE.hooked()((gm as u32 + 0x10) as *const u32, price) };
+             Ok(lua_result(Ok(format!("admission {:.2}", admission().unwrap_or_default()))))
+         });
++    lua_fn!("coop_layout_list", "ZooTogether lab: the placed objects coop_layout hashes, one per line", "coop_layout_list()", || {
++        let mut v: Vec<String> = crate::ztworldmgr::coop_static_entities()
++            .into_iter()
++            .filter_map(|e| {
++                let name = crate::util::get_string_from_memory(read_i32(e + 0x108) as u32);
++                placement_of(e).map(|p| format!("{} vt={:#x} name={name}", fmt_placement(&p), read_i32(e)))
++            })
++            .collect();
++        v.sort();
++        Ok(v.join("\n"))
++    });
+     lua_fn!("coop_place", "ZooTogether: build type/subtype at world x, y, z with rotation", "coop_place(type, subtype, x, y, z, rot)",
+         |t: String, sub: String, x: i32, y: i32, z: i32, rot: i32| {
+             let pl = Placement { zt_type: t, zt_sub_type: sub, pos: [x, y, z], rotation: rot };
+diff --git a/openzt/src/roofs.rs b/openzt/src/roofs.rs
+index 897f7e0..56e88e9 100644
+--- a/openzt/src/roofs.rs
++++ b/openzt/src/roofs.rs
+@@ -30,6 +30,8 @@ pub mod roof_detours {
+     /// The second parameter (entity_ptr) is the BFEntity that was just placed.
+     #[detour(PLACE_ENTITY_ON_MAP_1)]
+     unsafe extern "thiscall" fn place_entity_on_map_detour(_this: *const u32, entity_ptr: *const u32, _pos: f32, _rotation: i32) -> *const i32 {
++        #[cfg(feature = "coop")]
++        crate::coop::placement_begin();
+         // Call the original function first to place the entity
+         let result = unsafe { PLACE_ENTITY_ON_MAP_1_DETOUR.call(_this, entity_ptr, _pos, _rotation) };
+ 
+@@ -57,9 +59,7 @@ pub mod roof_detours {
+         }
+ 
+         #[cfg(feature = "coop")]
+-        if !result.is_null() {
+-            crate::coop::on_entity_placed(result as u32);
+-        }
++        crate::coop::on_entity_placed(result as u32);
+ 
+         result
+     }
 -- 
 2.56.0.windows.3
 

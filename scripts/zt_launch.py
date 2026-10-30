@@ -190,3 +190,38 @@ def click(pid, x, y, settle=0.6):
     time.sleep(0.15)
     u32.PostMessageW(hwnd, WM_LBUTTONUP, 0, lp)
     time.sleep(settle)
+
+
+def drag(pid, x0, y0, x1, y1, steps=8, settle=0.8, on_move=None):
+    """Left-drags from client pixel (x0, y0) to (x1, y1) with posted messages (see click).
+
+    on_move(x, y) runs before each mouse position is posted; the lab uses it to move the copy's fake
+    mouse, since the game follows a drag through GetCursorPos rather than the messages.
+    """
+    on_move = on_move or (lambda x, y: None)
+    hwnd = windows_of(pid)[0]
+    u32.PostMessageW(hwnd, WM_ACTIVATEAPP, 1, 0)
+    u32.PostMessageW(hwnd, WM_ACTIVATE, 1, 0)
+    on_move(x0, y0)
+    u32.PostMessageW(hwnd, WM_MOUSEMOVE, 0, (y0 << 16) | x0)
+    time.sleep(0.2)
+    u32.PostMessageW(hwnd, WM_LBUTTONDOWN, 1, (y0 << 16) | x0)
+    for i in range(1, steps + 1):
+        x, y = x0 + (x1 - x0) * i // steps, y0 + (y1 - y0) * i // steps
+        time.sleep(0.08)
+        on_move(x, y)
+        u32.PostMessageW(hwnd, WM_MOUSEMOVE, 1, (y << 16) | x)  # MK_LBUTTON
+    time.sleep(0.15)
+    u32.PostMessageW(hwnd, WM_LBUTTONUP, 0, (y1 << 16) | x1)
+    time.sleep(settle)
+
+
+def wheel(pid, x, y, notches):
+    """Scrolls the mouse wheel over client pixel (x, y); negative notches scroll down."""
+    hwnd = windows_of(pid)[0]
+    pt = wt.POINT(x, y)
+    u32.ClientToScreen(hwnd, ctypes.byref(pt))  # WM_MOUSEWHEEL carries screen coordinates
+    for _ in range(abs(notches)):
+        delta = (120 if notches > 0 else -120) & 0xFFFF
+        u32.PostMessageW(hwnd, 0x20A, delta << 16, ((pt.y & 0xFFFF) << 16) | (pt.x & 0xFFFF))
+        time.sleep(0.3)
