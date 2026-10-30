@@ -25,6 +25,7 @@ Checks, in order:
                  host removes it too and the layouts match
   remove_h2c     the host sells its snack machine; the client removes it; both are back to the map's
                  original layout
+  hire_c2h       the client hires a zookeeper with real clicks; the host adds the same keeper
 
 --mutant nojoin      client never joins          -> zoo_transfer..client_spend must FAIL
 --mutant drop_spend  host ignores client spends  -> client_spend must FAIL, the rest pass
@@ -32,6 +33,7 @@ Checks, in order:
 --mutant no_cursor   client never sends its cursor -> cursor_c2h and cursor_drawn must FAIL
 --mutant no_place    client never sends its builds -> build_c2h, build_drawn (and so remove_c2h) must FAIL
 --mutant no_remove   client never sends its removals -> remove_c2h must FAIL
+                     (no_place also stops the client's hire, so hire_c2h fails under it too)
 
 build_drawn needs Pillow; the lab looks for it in private/pylib (pip install --target private/pylib pillow).
 
@@ -61,23 +63,25 @@ MAP = "maps\\default.zoo"
 
 ALL_CHECKS = ["zoo_transfer", "layout", "cash_join", "host_change", "client_spend", "no_double", "date",
               "host_pause", "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
-              "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c"]
+              "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c", "hire_c2h"]
 CURSOR_CHECKS = {"cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn"}
 EXPECTED_FAIL = {
     None: set(),
     "nojoin": {"zoo_transfer", "layout", "cash_join", "host_change", "client_spend", "date", "host_pause",
                "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
-               "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c"},
+               "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c", "hire_c2h"},
     "drop_spend": {"client_spend"},
     "no_date": {"date"},
     "no_cursor": {"cursor_c2h", "cursor_drawn"},
-    "no_place": {"build_c2h", "build_drawn", "remove_c2h"},  # the host never had the client's build to remove
+    "no_place": {"build_c2h", "build_drawn", "remove_c2h", "hire_c2h"},  # the host never had the client's build to remove
     "no_remove": {"remove_c2h"},
 }
 # Buy menu: the Buildings button, then a free grass pixel; the first item (Snack Machine) is selected.
 BUILDINGS_BUTTON = (25, 125)
 CLIENT_BUILD_AT = (600, 150)
 HOST_BUILD_AT = (450, 110)
+STAFF_BUTTON = (25, 170)  # first item: Zookeeper, $800 a month
+CLIENT_HIRE_AT = (500, 150)
 
 
 def lua(addr, code, timeout=30.0):
@@ -317,6 +321,17 @@ def run(args, results):
     checks["remove_h2c"] = bool(h_removed == h_placed and got and count(layouts[8182]) == client_count0 - 1
                                 and (layouts[8182] == original or not checks["remove_c2h"]))
     results["remove"].update(host_removed=h_removed, host_layout_2=layouts[8181], client_layout_2=layouts[8182])
+
+    # Staff: hiring places the keeper through the same placement path as a purchase.
+    applied0 = int(status(HOST_CONSOLE).get("places_applied", 0))
+    zt_launch.click(client_pid, *STAFF_BUTTON)
+    zt_launch.click(client_pid, *CLIENT_HIRE_AT)
+    zt_launch.click(client_pid, *STAFF_BUTTON)
+    hired = status(CLIENT_CONSOLE).get("last_placed", "")
+    got = wait_until(lambda: int(status(HOST_CONSOLE).get("places_applied", 0)) > applied0, 3)
+    host_error = status(HOST_CONSOLE).get("last_error")
+    checks["hire_c2h"] = bool(hired.startswith("keeper/") and got and host_error == "-")
+    results["hire"] = {"client_placed": hired, "host_last_error": host_error}
 
     results["status"] = {"host": lua(HOST_CONSOLE, "return coop_status()"),
                          "client": lua(CLIENT_CONSOLE, "return coop_status()")}
