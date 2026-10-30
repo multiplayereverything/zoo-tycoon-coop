@@ -1,7 +1,7 @@
 From beed50b7f5098f3cbb80e31447184686bcd50973 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 01:22:29 +0200
-Subject: [PATCH 1/8] ZooTogether: host-authoritative shared budget over TCP
+Subject: [PATCH 1/9] ZooTogether: host-authoritative shared budget over TCP
  (coop feature)
 
 - coop.rs: session, framed wire protocol, client/host spend ledgers, Lua commands
@@ -830,7 +830,7 @@ index b81a048..260db83 100644
 From e8c69374d76e8860a39f03cf99191bf42b78d805 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 03:31:53 +0200
-Subject: [PATCH 2/8] ZooTogether protocol 2: join-in-progress zoo transfer,
+Subject: [PATCH 2/9] ZooTogether protocol 2: join-in-progress zoo transfer,
  date and pause sync
 
 - Host saves its zoo through SAVE_GAME (save dialog detoured to a fixed path) and streams it in
@@ -1833,7 +1833,7 @@ index 1ec6ce8..909a1f4 100644
 From 0451b17ae2cc9fd5a5004d7f9081254fde9ddfc8 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 05:16:29 +0200
-Subject: [PATCH 3/8] ZooTogether protocol 3: player cursors
+Subject: [PATCH 3/9] ZooTogether protocol 3: player cursors
 
 - Cursor message (world position, 10 Hz max, on change) both ways
 - Screen<->world via ZTMapView/BFMap camera origin and virtualToWorld/worldToVirtual
@@ -2226,7 +2226,7 @@ index c52bee2..5fc2ef0 100644
 From c79f2687e6163315b58e09882bc8d7a353ad8420 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 06:31:20 +0200
-Subject: [PATCH 4/8] ZooTogether protocol 4: building sync (placements both
+Subject: [PATCH 4/9] ZooTogether protocol 4: building sync (placements both
  ways)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -2541,7 +2541,7 @@ index 909a1f4..340a2d5 100644
 From 4ca25cb39daa9728012c4a5adf0e22fadf19624b Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 07:01:23 +0200
-Subject: [PATCH 5/8] ZooTogether protocol 5: removal sync; re-entrancy-safe
+Subject: [PATCH 5/9] ZooTogether protocol 5: removal sync; re-entrancy-safe
  console and coop tick
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -2918,7 +2918,7 @@ index 340a2d5..ad6935b 100644
 From dcf6482a19e874e32e6b1be3f9d8552db4f096c7 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 07:18:28 +0200
-Subject: [PATCH 6/8] ZooTogether protocol 6: admission price sync
+Subject: [PATCH 6/9] ZooTogether protocol 6: admission price sync
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -3174,7 +3174,7 @@ index b3fac1a..546ae16 100644
 From a1b063018e7a4298a9f25ec55182ef462e5716fb Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 08:48:36 +0200
-Subject: [PATCH 7/8] ZooTogether: exhibits and animals (fence replay position,
+Subject: [PATCH 7/9] ZooTogether: exhibits and animals (fence replay position,
  name prompt, gate reconcile), lab fake mouse
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -3446,7 +3446,7 @@ index 897f7e0..56e88e9 100644
 From 1488657e91838f45a7b8d38bd7ab5fde3dbffc60 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 09:56:03 +0200
-Subject: [PATCH 8/8] ZooTogether protocol 7: moving staff and animals
+Subject: [PATCH 8/9] ZooTogether protocol 7: moving staff and animals
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -3776,6 +3776,180 @@ index ad6935b..73ebe45 100644
  /// ZooTogether co-op: every loaded entity type pointer.
  #[cfg(feature = "coop")]
  pub(crate) fn coop_entity_types() -> Vec<u32> {
+-- 
+2.56.0.windows.3
+
+
+From 7fc4950bb1b8353f340b4b1563ae5b79c7ac9060 Mon Sep 17 00:00:00 2001
+From: multiplayereverything <multiplayereverythingofficial@gmail.com>
+Date: Fri, 30 Oct 2026 10:47:22 +0200
+Subject: [PATCH 9/9] ZooTogether: firing staff / selling animals; clear undo
+ and selection after replays
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ openzt/src/coop.rs       | 67 +++++++++++++++++++++++++++++++---------
+ openzt/src/ztworldmgr.rs | 15 +++++++++
+ 2 files changed, 67 insertions(+), 15 deletions(-)
+
+diff --git a/openzt/src/coop.rs b/openzt/src/coop.rs
+index a5006d3..5e18540 100644
+--- a/openzt/src/coop.rs
++++ b/openzt/src/coop.rs
+@@ -1410,7 +1410,12 @@ fn move_entity(from: &Placement, to: &Placement) -> Result<(), String> {
+         SET_WORLD_POS.original()(entity as *const u32, to.pos.as_ptr() as *const u32);
+         SNAP_TO_GRID.original()(entity as *const u32);
+         SET_WORLD_POS.original()(entity as *const u32, to.pos.as_ptr() as *const u32);
+-        PLACE_ENTITY_ON_MAP_1.hooked()(mapview, entity as *const u32, 0.0, 0)
++        let placed = PLACE_ENTITY_ON_MAP_1.hooked()(mapview, entity as *const u32, 0.0, 0);
++        // Don't leave the other player's map view pointing at it (it may be fired or sold later,
++        // and a stale selection crashed the next exhibit build once its memory was reused).
++        SET_SELECTED_ENTITY_0.original()(mapview, std::ptr::null(), true);
++        forget_undo(mapview);
++        placed
+     };
+     APPLYING_REMOTE.store(false, Ordering::Relaxed);
+     if placed.is_null() {
+@@ -1486,10 +1491,14 @@ fn place_entity(pl: &Placement) -> Result<u32, String> {
+     APPLYING_REMOTE.store(true, Ordering::Relaxed);
+     let placed = unsafe { PLACE_ENTITY_ON_MAP_1.hooked()(mapview, entity as *const u32, 0.0, 0) };
+     APPLYING_REMOTE.store(false, Ordering::Relaxed);
++    forget_undo(mapview);
+     if placed.is_null() {
+         return Err(format!("placeEntityOnMap refused {}", fmt_placement(pl)));
+     }
+-    REMOTE_FENCES.lock().unwrap().push(placed as u32);
++    // Only fence pieces matter for the gate fix-up (`Fences` 0x62d808, `TankWall` 0x62dbc0 vtables).
++    if matches!(read_i32(placed as u32) as u32, 0x62d808 | 0x62dbc0) {
++        REMOTE_FENCES.lock().unwrap().push(placed as u32);
++    }
+     Ok(placed as u32)
+ }
+ 
+@@ -1525,22 +1534,48 @@ mod removal_detours {
+ /// The object about to be removed, if it is one this mod syncs (placed, non-moving: not animals,
+ /// guests or staff) and the player is removing it (not a replay).
+ fn removal_candidate(entity: u32) -> Option<Placement> {
+-    if entity == 0 || APPLYING_REMOTE.load(Ordering::Relaxed) || !crate::ztworldmgr::coop_static_entities().contains(&entity) {
++    if entity == 0 || APPLYING_REMOTE.load(Ordering::Relaxed) || !synced_entities().contains(&entity) {
+         return None;
+     }
+     placement_of(entity)
+ }
+ 
++/// What removals cover: placed objects, plus animals and staff (selling an animal, firing staff).
++/// Guests are left out: they leave the zoo all the time on each copy on its own.
++fn synced_entities() -> Vec<u32> {
++    let mut v = crate::ztworldmgr::coop_static_entities();
++    v.extend(crate::ztworldmgr::coop_living_entities());
++    v
++}
++
++/// The object `pl` names on this copy: a placed object at exactly that position, or else (animals and
++/// staff walk on each copy on its own) the animal or staff member of that type nearest to it.
++fn find_synced(pl: &Placement) -> Option<u32> {
++    crate::ztworldmgr::coop_static_entities()
++        .into_iter()
++        .find(|&e| placement_of(e).is_some_and(|p| p.zt_type == pl.zt_type && p.zt_sub_type == pl.zt_sub_type && p.pos == pl.pos))
++        .or_else(|| nearest_entity(pl).filter(|e| crate::ztworldmgr::coop_living_entities().contains(e)))
++}
++
+ /// Called (game thread) after `removeEntityFromMap` returned for a [`removal_candidate`].
+ fn on_entity_removed(entity: u32, pl: Placement) {
+-    if crate::ztworldmgr::coop_static_entities().contains(&entity) {
++    if synced_entities().contains(&entity) {
+         return; // still there: the player answered no
+     }
+     info!("coop: removed {}", fmt_placement(&pl));
++    REMOTE_FENCES.lock().unwrap().retain(|&e| e != entity); // freed: the address may be reused
+     *LAST_REMOVED.lock().unwrap() = Some(pl.clone());
+     PENDING_REMOVED.lock().unwrap().push(pl);
+ }
+ 
++/// Clears this player's undo history after a replay (place, move, remove). Undo entries keep entity pointers: a replayed
++/// object the other player later removes would leave a stale one, and the next placement here walked
++/// it and crashed. Undoing the other player's actions would be wrong anyway.
++fn forget_undo(mapview: *const u32) {
++    use openzt_detour::generated::ztmapview::CLEAR_UNDO_ACTIONS;
++    unsafe { CLEAR_UNDO_ACTIONS.original()(mapview, 0) };
++}
++
+ /// Runs `f` with the map view's "confirm before selling" byte cleared (see the removal notes above).
+ fn without_sell_confirm(mapview: *const u32, f: impl FnOnce()) {
+     let flag = (mapview as u32 + 0x456) as *mut u8;
+@@ -1554,12 +1589,11 @@ fn without_sell_confirm(mapview: *const u32, f: impl FnOnce()) {
+ 
+ /// Removes the object matching `pl` (type and position) from this copy, the way the sell button does.
+ fn remove_entity(pl: &Placement) -> Result<(), String> {
+-    use openzt_detour::generated::ztmapview::{REMOVE_ENTITY, SET_SELECTED_ENTITY_0};
++    use openzt_detour::generated::ztmapview::{REMOVE_ENTITY, REMOVE_SELECTED_ENTITY, SET_SELECTED_ENTITY_0};
+     use openzt_detour::generated::ztui_general::GET_MAPVIEW;
+-    let entity = crate::ztworldmgr::coop_static_entities()
+-        .into_iter()
+-        .find(|&e| placement_of(e).is_some_and(|p| p.zt_type == pl.zt_type && p.zt_sub_type == pl.zt_sub_type && p.pos == pl.pos))
+-        .ok_or_else(|| format!("nothing to remove at {}", fmt_placement(pl)))?;
++    let entity = find_synced(pl).ok_or_else(|| format!("nothing to remove at {}", fmt_placement(pl)))?;
++    REMOTE_FENCES.lock().unwrap().retain(|&e| e != entity); // freed: the address may be reused
++    let living = crate::ztworldmgr::coop_living_entities().contains(&entity);
+     let mapview = unsafe { GET_MAPVIEW.original()() };
+     if mapview.is_null() {
+         return Err("no map view".into());
+@@ -1570,8 +1604,15 @@ fn remove_entity(pl: &Placement) -> Result<(), String> {
+             SET_SELECTED_ENTITY_0.original()(mapview, std::ptr::null(), true);
+         }
+         APPLYING_REMOTE.store(true, Ordering::Relaxed);
+-        without_sell_confirm(mapview, || REMOVE_ENTITY.original()(mapview, entity as *const i32, 0));
++        if living {
++            // Animals and staff go the way the player's sell / fire does: select, then remove selected.
++            SET_SELECTED_ENTITY_0.original()(mapview, entity as *const u32, true);
++            without_sell_confirm(mapview, || REMOVE_SELECTED_ENTITY.original()(mapview, 0));
++        } else {
++            without_sell_confirm(mapview, || REMOVE_ENTITY.original()(mapview, entity as *const i32, 0));
++        }
+         APPLYING_REMOTE.store(false, Ordering::Relaxed);
++        forget_undo(mapview);
+     }
+     Ok(())
+ }
+@@ -1752,11 +1793,7 @@ pub fn init() {
+         "coop_test_sell(type, subtype, x, y, z)", |t: String, sub: String, x: i32, y: i32, z: i32| {
+             use openzt_detour::generated::ztmapview::{REMOVE_SELECTED_ENTITY, SET_SELECTED_ENTITY_0};
+             use openzt_detour::generated::ztui_general::GET_MAPVIEW;
+-            let pos = [x, y, z];
+-            let Some(entity) = crate::ztworldmgr::coop_static_entities()
+-                .into_iter()
+-                .find(|&e| placement_of(e).is_some_and(|p| p.zt_type == t && p.zt_sub_type == sub && p.pos == pos))
+-            else {
++            let Some(entity) = find_synced(&Placement { zt_type: t, zt_sub_type: sub, pos: [x, y, z], rotation: 0 }) else {
+                 return Ok(lua_result(Err("not found".into())));
+             };
+             unsafe {
+diff --git a/openzt/src/ztworldmgr.rs b/openzt/src/ztworldmgr.rs
+index 73ebe45..3ecf072 100644
+--- a/openzt/src/ztworldmgr.rs
++++ b/openzt/src/ztworldmgr.rs
+@@ -1346,6 +1346,21 @@ pub(crate) fn coop_static_entities() -> Vec<u32> {
+         .collect()
+ }
+ 
++/// ZooTogether co-op: pointers of the animals and staff (not guests).
++#[cfg(feature = "coop")]
++pub(crate) fn coop_living_entities() -> Vec<u32> {
++    get_zt_world_mgr_entities(globals().ztworldmgr())
++        .into_iter()
++        .filter(|e| {
++            matches!(
++                e.entity.class,
++                ZTEntityClass::Animal | ZTEntityClass::Keeper | ZTEntityClass::MaintenanceWorker | ZTEntityClass::TourGuide | ZTEntityClass::Drt
++            )
++        })
++        .map(|e| e.ptr)
++        .collect()
++}
++
+ /// ZooTogether co-op: pointers of every entity in the world (animals, staff and guests included).
+ #[cfg(feature = "coop")]
+ pub(crate) fn coop_all_entities() -> Vec<u32> {
 -- 
 2.56.0.windows.3
 

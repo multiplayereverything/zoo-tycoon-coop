@@ -3,8 +3,8 @@
 Status: **join-in-progress, budget, date, pause, player cursors, building / selling objects, hiring
 staff, the admission price, building exhibits (fences, with their gate) and adopting animals work in a
 two-copy lab** (see "Lab"), and picking up and dropping staff or animals moves them on both copies.
-Version 0.7.0-dev (protocol 7). Not synced: what animals, guests and staff *do* by themselves (each copy
-simulates them), firing staff, research, awards.
+Firing staff and selling animals sync too. Version 0.8.0-dev (protocol 7). Not synced: what animals,
+guests and staff *do* by themselves (each copy simulates them), research, awards.
 How to work on this repo: [AGENTS.md](AGENTS.md) (Karpathy guidelines + project rules). Repo: https://github.com/multiplayereverything/zoo-tycoon-coop (no
 release yet). Built on [openzt](https://github.com/openzt1/openzt) (by the openzt authors; LICENSE file
 GPL-3.0, Cargo metadata MIT/Apache-2.0, so this repo is GPL-3.0), a Rust DLL that the game loads as
@@ -21,7 +21,7 @@ Zoo Tycoon\ZooTogether\          this repo (the game never scans it)
   scripts\setup-lab.ps1          makes private\lab-host + private\lab-client (hardlinked copies)
   scripts\zt_launch.py           starts a copy suspended, lifts the one-instance check, parks it
                                  off-screen, captures its window (PrintWindow, needs Pillow)
-  scripts\lab_coop.py            the two-copy co-op lab, 25 checks (+ 8 mutants)
+  scripts\lab_coop.py            the two-copy co-op lab, 26 checks (+ 8 mutants)
   scripts\lab_all.py             runs lab_coop normally and once per mutant, writes a summary table
   scripts\get-openzt.ps1         clones openzt at df01b96 and applies the patch into vendor\openzt
   patches\openzt-zoo-together.patch   our changes to openzt, as patches on upstream df01b96
@@ -160,9 +160,18 @@ already paid through the shared budget; the host replays the client's builds at 
 - **Nested frames.** That dialog's nested frames re-enter openzt's per-frame hook. The console's
   `call_next_command` and `coop::tick` now `try_lock` their mutex and skip a re-entered frame instead of
   deadlocking (found with a stack sample of the hung copy).
-- Only placed, non-moving objects are synced for *removal* (the `coop_layout` set: buildings,
-  scenery, fences, paths, tank walls/filters). Hiring staff and adopting animals are placements and
-  replicate; what they do afterwards does not.
+- Removal covers placed objects (the `coop_layout` set: buildings, scenery, fences, paths, tank
+  walls/filters) and animals and staff (selling an animal, firing staff: the same sell path). Guests
+  are left out (they leave the zoo all the time on each copy). An animal or staff member is found on
+  the other copy as the nearest one of its type, and removed by selecting it and calling
+  `removeSelectedEntity`, as the player does.
+- **Undo history and stale pointers.** After every replay (place, move, remove) coop clears the
+  replaying player's undo history (`ZTMapView::clearUndoActions` 0x4f16f0) and deselects what a
+  replayed move selected. Found the hard way: the host replayed the client's hired keeper, its move
+  and then its firing; the host's undo entries (and selection) still pointed at the freed keeper, and
+  the host crashed on its next own exhibit once that memory was reused (reproduced 3 times, gone with
+  the fix; bisected by skipping the fire step, then the client's exhibit). Cost: a player loses their
+  own undo history whenever the other player builds, moves or removes something.
 - **Fences and exhibits** (protocol 6, 2026-10-30). A fence drag places one entity per edge through
   `placeEntityOnMap`, so each piece replicates like a purchase. Three things needed care:
   - `snapToGrid` also moves edge objects half a tile, so the replay sets the world position again
@@ -252,7 +261,13 @@ it). The script handles both. Output: `vendor\openzt\target\i686-pc-windows-msvc
   turns it on) did not work with posted clicks; it seems to pick the object under the *real* mouse,
   not checked. The lab sells through the game's sell path from Lua instead (`coop_test_sell`).
 
-### Results, protocol 7 (2026-10-30 08:58-, private\lab-results\*-summary.md)
+### Results, firing staff (2026-10-30 10:21-, private\lab-results\*-summary.md)
+
+New check `fire_c2h`: the client fires the keeper it moved (sell path); the host's keeper of that type
+is gone. `no_remove` now also expects it to fail. Normal run 10:21 26/26 after the undo fix. Full suite 10:24-10:47
+(`20261030-104705-summary.md`): both normal runs 26/26 and all 8 mutants caught, verdict PASS.
+
+### Results, protocol 7 (2026-10-30 08:58-09:55)
 
 New checks: `move_c2h` (the client picks up the keeper it hired through the game's pick-up and drops
 it with a posted click at the fake mouse; the host's nearest keeper ends at the drop point: client

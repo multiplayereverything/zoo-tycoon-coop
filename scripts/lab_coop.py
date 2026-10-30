@@ -30,6 +30,7 @@ Checks, in order:
   admission_h2c  the host sets it; the client follows
   move_c2h       the client picks up the keeper it hired and drops it elsewhere; the host moves its copy
                  of that keeper there (staff and animals walk on each copy, so it is found by nearest)
+  fire_c2h       the client fires that keeper (the game's sell path); the host's keeper goes too
   exhibit_c2h    the client drags a square of fence (real drags; the copies run with ZT_LAB_FAKE_MOUSE so
                  the game's GetCursorPos follows the lab's mouse) and names the new exhibit; the host
                  builds the same fence, gets one more exhibit and shows no name prompt
@@ -76,23 +77,23 @@ MAP = "maps\\default.zoo"
 ALL_CHECKS = ["zoo_transfer", "layout", "cash_join", "host_change", "client_spend", "no_double", "date",
               "host_pause", "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
               "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c", "hire_c2h",
-              "admission_c2h", "admission_h2c", "move_c2h", "exhibit_c2h", "exhibit_h2c", "animal_c2h"]
+              "admission_c2h", "admission_h2c", "move_c2h", "fire_c2h", "exhibit_c2h", "exhibit_h2c", "animal_c2h"]
 CURSOR_CHECKS = {"cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn"}
 EXPECTED_FAIL = {
     None: set(),
     "nojoin": {"zoo_transfer", "layout", "cash_join", "host_change", "client_spend", "date", "host_pause",
                "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
                "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c", "hire_c2h",
-               "admission_c2h", "admission_h2c", "move_c2h", "exhibit_c2h", "exhibit_h2c",
+               "admission_c2h", "admission_h2c", "move_c2h", "fire_c2h", "exhibit_c2h", "exhibit_h2c",
                "animal_c2h"},
     "drop_spend": {"client_spend"},
     "no_date": {"date"},
     "no_cursor": {"cursor_c2h", "cursor_drawn"},
     # no_place also breaks what depends on the client's placements reaching the host; exhibit_h2c fails
     # because the copies then number exhibits differently and a gate carries its exhibit's name.
-    "no_place": {"build_c2h", "build_drawn", "remove_c2h", "hire_c2h", "move_c2h", "exhibit_c2h", "exhibit_h2c",
-                 "animal_c2h"},  # the host never had the client's build to remove
-    "no_remove": {"remove_c2h"},
+    "no_place": {"build_c2h", "build_drawn", "remove_c2h", "hire_c2h", "move_c2h", "fire_c2h", "exhibit_c2h",
+                 "exhibit_h2c", "animal_c2h"},  # the host never had the client's build to remove
+    "no_remove": {"remove_c2h", "fire_c2h"},
     "no_admission": {"admission_c2h"},
     "no_move": {"move_c2h"},
 }
@@ -408,7 +409,7 @@ def run(args, results):
 
     if not checks["zoo_transfer"]:
         # The client never entered the zoo (nojoin): the in-zoo steps below would click its menu.
-        for k in ("move_c2h", "exhibit_c2h", "exhibit_h2c", "animal_c2h"):
+        for k in ("move_c2h", "fire_c2h", "exhibit_c2h", "exhibit_h2c", "animal_c2h"):
             checks[k] = False
         return
 
@@ -432,6 +433,14 @@ def run(args, results):
     # The keeper starts walking again right away, so allow a little distance.
     checks["move_c2h"] = bool(got and to and hn and abs(int(hn[1]) - int(to[3])) <= 64 and abs(int(hn[2]) - int(to[4])) <= 64)
     results["move"] = {"client_moved": moved, "host_nearest": host_near}
+
+    # Fire that keeper (the sell path, like the staff info panel's button).
+    applied0 = int(status(HOST_CONSOLE).get("removes_applied", 0))
+    fired = lua(CLIENT_CONSOLE, f'return coop_test_sell("{to[1]}", "{to[2]}", {to[3]}, {to[4]}, {to[5]})') if to else "nothing"
+    got = wait_until(lambda: int(status(HOST_CONSOLE).get("removes_applied", 0)) > applied0, 3)
+    left = lua(HOST_CONSOLE, f'return coop_nearest("{to[1]}", "{to[2]}", {to[3]}, {to[4]}, {to[5]})') if to else "?"
+    checks["fire_c2h"] = bool(fired.startswith("sold") and got and left == "none")
+    results["fire"] = {"client": fired, "host_keeper_left": left}
 
     def exhibit(builder_pid, builder, other, start):
         """The builder drags a closed square of fence from `start`; the other copy must end with the
