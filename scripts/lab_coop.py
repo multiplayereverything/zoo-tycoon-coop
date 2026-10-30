@@ -31,6 +31,10 @@ Checks, in order:
   move_c2h       the client picks up the keeper it hired and drops it elsewhere; the host moves its copy
                  of that keeper there (staff and animals walk on each copy, so it is found by nearest)
   fire_c2h       the client fires that keeper (the game's sell path); the host's keeper goes too
+  living_match   animals and staff: each host one has a same-type one within 200 units on the client
+  living_birth   a keeper that appears only on the host (made directly, not bought) reaches the client
+  living_death   a keeper that appears only on the client is removed there (the host doesn't have it)
+  living_drift   the client's keeper is moved 450 units on the client only; it comes back to the host's spot
   exhibit_c2h    the client drags a square of fence (real drags; the copies run with ZT_LAB_FAKE_MOUSE so
                  the game's GetCursorPos follows the lab's mouse) and names the new exhibit; the host
                  builds the same fence, gets one more exhibit and shows no name prompt
@@ -48,6 +52,7 @@ Checks, in order:
                      exhibit_c2h and animal_c2h fail under it too)
 --mutant no_admission  client never sends its price -> admission_c2h must FAIL
 --mutant no_move     client never sends its moves -> move_c2h must FAIL
+--mutant no_living   host never sends its animals and staff -> living_* must FAIL
 
 build_drawn needs Pillow; the lab looks for it in private/pylib (pip install --target private/pylib pillow).
 
@@ -78,15 +83,16 @@ MAP = "maps\\default.zoo"
 ALL_CHECKS = ["zoo_transfer", "layout", "cash_join", "host_change", "client_spend", "no_double", "date",
               "host_pause", "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
               "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c", "hire_c2h",
-              "admission_c2h", "admission_h2c", "move_c2h", "fire_c2h", "exhibit_c2h", "exhibit_h2c", "path_c2h", "animal_c2h"]
+              "admission_c2h", "admission_h2c", "move_c2h", "fire_c2h", "living_match", "living_birth", "living_death", "living_drift", "exhibit_c2h",
+              "exhibit_h2c", "path_c2h", "animal_c2h"]
 CURSOR_CHECKS = {"cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn"}
 EXPECTED_FAIL = {
     None: set(),
     "nojoin": {"zoo_transfer", "layout", "cash_join", "host_change", "client_spend", "date", "host_pause",
                "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
                "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c", "hire_c2h",
-               "admission_c2h", "admission_h2c", "move_c2h", "fire_c2h", "exhibit_c2h", "exhibit_h2c",
-               "path_c2h", "animal_c2h"},
+               "admission_c2h", "admission_h2c", "move_c2h", "fire_c2h", "living_match", "living_birth", "living_death",
+               "living_drift", "exhibit_c2h", "exhibit_h2c", "path_c2h", "animal_c2h"},
     "drop_spend": {"client_spend"},
     "no_date": {"date"},
     "no_cursor": {"cursor_c2h", "cursor_drawn"},
@@ -97,6 +103,8 @@ EXPECTED_FAIL = {
     "no_remove": {"remove_c2h", "fire_c2h"},
     "no_admission": {"admission_c2h"},
     "no_move": {"move_c2h"},
+    # living_match is not in here: without Living the copies can still happen to agree.
+    "no_living": {"living_birth", "living_death", "living_drift"},
 }
 # Buy menu: the Buildings button, then a free grass pixel; the first item (Snack Machine) is selected.
 BUILDINGS_BUTTON = (25, 125)
@@ -105,6 +113,7 @@ HOST_BUILD_AT = (450, 110)
 STAFF_BUTTON = (25, 170)  # first item: Zookeeper, $800 a month
 CLIENT_HIRE_AT = (500, 150)
 MOVE_TO = (700, 230)
+LIVING_AT = (1300, 2600)  # world position for the lab's one-sided keepers
 CONSTRUCTION_BUTTON = (30, 34)  # opens the Fences list
 CREATURES_BUTTON = (30, 80)  # first item: African Elephant, $2500
 FENCE_LIST = (110, 160)  # 8 wheel notches down puts Low Stick Pole Fence ($55, land) first
@@ -206,8 +215,8 @@ def run(args, results):
     if args.mutant in ("no_date", "no_cursor", "no_place", "no_remove", "no_admission", "no_move"):
         client_env["ZT_COOP_MUTANT"] = args.mutant
     host_env = dict(base_env)
-    if args.mutant == "drop_spend":
-        host_env["ZT_COOP_MUTANT"] = "drop_spend"
+    if args.mutant in ("drop_spend", "no_living"):
+        host_env["ZT_COOP_MUTANT"] = args.mutant
 
     pids.append(zt_launch.launch(HOST_DIR, host_env))
     time.sleep(3)
@@ -412,7 +421,8 @@ def run(args, results):
 
     if not checks["zoo_transfer"]:
         # The client never entered the zoo (nojoin): the in-zoo steps below would click its menu.
-        for k in ("move_c2h", "fire_c2h", "exhibit_c2h", "exhibit_h2c", "path_c2h", "animal_c2h"):
+        for k in ("move_c2h", "fire_c2h", "living_match", "living_birth", "living_death", "living_drift", "exhibit_c2h", "exhibit_h2c",
+                  "path_c2h", "animal_c2h"):
             checks[k] = False
         return
 
@@ -444,6 +454,50 @@ def run(args, results):
     left = lua(HOST_CONSOLE, f'return coop_nearest("{to[1]}", "{to[2]}", {to[3]}, {to[4]}, {to[5]})') if to else "?"
     checks["fire_c2h"] = bool(fired.startswith("sold") and got and left == "none")
     results["fire"] = {"client": fired, "host_keeper_left": left}
+
+    # Living state: the host's animals and staff are the real ones.
+    def living(addr):
+        out = []
+        for line in lua(addr, "return coop_living_list()").splitlines():
+            m = re.match(r"(\w+/\w+)@(-?\d+),(-?\d+)", line)
+            if m:
+                out.append((m[1], int(m[2]), int(m[3])))
+        return out
+
+    def living_matches():
+        h, c = living(HOST_CONSOLE), living(CLIENT_CONSOLE)
+        if sorted(t for t, _, _ in h) != sorted(t for t, _, _ in c):
+            return None
+        left = list(c)
+        for t, x, y in h:
+            near = [e for e in left if e[0] == t and abs(e[1] - x) <= 200 and abs(e[2] - y) <= 200]
+            if not near:
+                return None
+            left.remove(near[0])
+        return h or ["(none)"]
+
+    checks["living_match"] = bool(wait_until(living_matches, 4))
+    count = lambda addr, t: sum(1 for k, _, _ in living(addr) if k == t)
+    c0 = count(CLIENT_CONSOLE, "keeper/m")
+    lua(HOST_CONSOLE, f'return coop_place("keeper", "m", {LIVING_AT[0]}, {LIVING_AT[1]}, 0, 4)')
+    checks["living_birth"] = bool(wait_until(lambda: count(CLIENT_CONSOLE, "keeper/m") == c0 + 1, 4))
+    c1 = count(CLIENT_CONSOLE, "keeper/m")
+    extra = lua(CLIENT_CONSOLE, f'return coop_place("keeper", "m", {LIVING_AT[0] + 64}, {LIVING_AT[1]}, 0, 4)')
+    # The client may already have removed it again by the next read, so trust the reply.
+    checks["living_death"] = bool(extra.startswith("placed") and wait_until(lambda: count(CLIENT_CONSOLE, "keeper/m") == c1, 4))
+    time.sleep(1.5)
+    hk = [e for e in living(HOST_CONSOLE) if e[0] == "keeper/m"]
+    drifted = lua(CLIENT_CONSOLE, f'return coop_test_teleport("keeper", "m", {hk[0][1]}, {hk[0][2]}, {hk[0][1]}, {hk[0][2] - 450})') if hk else "none"
+
+    def back():
+        h = [e for e in living(HOST_CONSOLE) if e[0] == "keeper/m"]
+        c = [e for e in living(CLIENT_CONSOLE) if e[0] == "keeper/m"]
+        # The client snaps to the host's spot; both keep walking, so allow a little.
+        return h and c and abs(h[0][1] - c[0][1]) <= 120 and abs(h[0][2] - c[0][2]) <= 120
+
+    checks["living_drift"] = bool(hk and "keeper/m@" in drifted and wait_until(back, 4))
+    results["living"] = {"host": living(HOST_CONSOLE), "client": living(CLIENT_CONSOLE), "client_extra": extra,
+                         "client_drifted_to": drifted}
 
     def exhibit(builder_pid, builder, other, start):
         """The builder drags a closed square of fence from `start`; the other copy must end with the
@@ -530,7 +584,7 @@ def run(args, results):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mutant", choices=["nojoin", "drop_spend", "no_date", "no_cursor", "no_place", "no_remove", "no_admission", "no_move"], default=None)
+    ap.add_argument("--mutant", choices=["nojoin", "drop_spend", "no_date", "no_cursor", "no_place", "no_remove", "no_admission", "no_move", "no_living"], default=None)
     ap.add_argument("--keep", action="store_true", help="leave the copies running")
     ap.add_argument("--shots", action="store_true", help="save window captures (needs Pillow)")
     args = ap.parse_args()

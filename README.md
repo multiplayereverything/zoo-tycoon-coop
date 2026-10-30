@@ -2,12 +2,13 @@
 
 Co-op for **Zoo Tycoon (2001)**: one player hosts a zoo, a friend joins by IP and gets the same zoo, budget, date and pause, and each player sees the other's cursor.
 
-**Status: 0.8.0-dev, early prototype.** When a friend joins, they receive the host's zoo. After that
+**Status: 0.9.0-dev, early prototype.** When a friend joins, they receive the host's zoo. After that
 the budget (purchases on either side come out of the host's money), the date, pause and admission price
 stay shared, each player's map cursor shows on the other's screen, and objects either player builds or
 sells, exhibits either player fences in, animals either player adopts and staff either player hires
 show up on both copies, a keeper or animal picked up and dropped moves on both, and firing staff or
-selling an animal removes it on both. What animals,
+selling an animal removes it on both. The host's animals and staff (where they are, births and
+deaths) are mirrored on the client once a second; guests are not synced. What animals,
 guests and staff do by themselves is simulated by each copy on its own, and research is not synced
 yet. See [handoff.md](handoff.md) for the plan, what is proven and what isn't.
 
@@ -56,7 +57,8 @@ date and pause are checked both ways; each player's cursor must reach and be dra
 each player buys a snack machine with real (posted) clicks and sells it, and both copies must end with
 the same layout; the client hires a keeper, moves it and fires it, each side fences in an exhibit, the client lays a path, the client
 adopts an elephant, and the admission price is set from each side. Each mutant
-(`nojoin`, `drop_spend`, `no_date`, `no_cursor`, `no_place`, `no_remove`, `no_admission`, `no_move`)
+(`nojoin`, `drop_spend`, `no_date`, `no_cursor`, `no_place`, `no_remove`, `no_admission`, `no_move`,
+`no_living`)
 breaks one feature on purpose and the lab must catch it.
 
 ## Credits and license

@@ -3,8 +3,9 @@
 Status: **join-in-progress, budget, date, pause, player cursors, building / selling objects, hiring
 staff, the admission price, building exhibits (fences, with their gate) and adopting animals work in a
 two-copy lab** (see "Lab"), and picking up and dropping staff or animals moves them on both copies.
-Firing staff and selling animals sync too. Version 0.8.0-dev (protocol 7). Not synced: what animals,
-guests and staff *do* by themselves (each copy simulates them), research, awards.
+Firing staff and selling animals sync too, and the host's animals and staff (where they are,
+births, deaths, escapes) are mirrored on the client once a second. Version 0.9.0-dev (protocol 8).
+Not synced: guests (decoration on the client), animal needs/happiness, research, awards.
 How to work on this repo: [AGENTS.md](AGENTS.md) (Karpathy guidelines + project rules). Repo: https://github.com/multiplayereverything/zoo-tycoon-coop (no
 release yet). Built on [openzt](https://github.com/openzt1/openzt) (by the openzt authors; LICENSE file
 GPL-3.0, Cargo metadata MIT/Apache-2.0, so this repo is GPL-3.0), a Rust DLL that the game loads as
@@ -21,7 +22,7 @@ Zoo Tycoon\ZooTogether\          this repo (the game never scans it)
   scripts\setup-lab.ps1          makes private\lab-host + private\lab-client (hardlinked copies)
   scripts\zt_launch.py           starts a copy suspended, lifts the one-instance check, parks it
                                  off-screen, captures its window (PrintWindow, needs Pillow)
-  scripts\lab_coop.py            the two-copy co-op lab, 27 checks (+ 8 mutants)
+  scripts\lab_coop.py            the two-copy co-op lab, 31 checks (+ 9 mutants)
   scripts\lab_all.py             runs lab_coop normally and once per mutant, writes a summary table
   scripts\get-openzt.ps1         clones openzt at df01b96 and applies the patch into vendor\openzt
   patches\openzt-zoo-together.patch   our changes to openzt, as patches on upstream df01b96
@@ -115,7 +116,8 @@ Phases:
 7. **Exhibits and animals** (done, see "Building sync"): fence pieces and animal adoptions are
    placements too.
 8. **Moving staff and animals** (done, protocol 7): see "Building sync".
-9. Animal/staff/guest behaviour (positions, escapes, deaths), research, awards (interest-managed, low rate), exhibits, research, awards. Until then
+9. **Animals and staff follow the host** (done, protocol 8): see "Living state".
+10. Guests, animal needs, research, awards (interest-managed, low rate), exhibits, research, awards. Until then
    each copy simulates guests and animals on its own from the join snapshot on.
 
 ## Networking
@@ -128,7 +130,7 @@ Phases:
   State{seq,cash,acked_spend,acked_pause,paused,date[16],admission}, Spend{seq,amount},
   Pause{seq,paused}, ZooChunk{offset,total,data}, ZooLoaded{ok}, Cursor{visible,x,y,z},
   Placed/Removed{x,y,z,rotation,zt_type,zt_sub_type}, Admission{price}, Moved{from, to} (two
-  placements), Keepalive (writer thread, 1 s; read timeout 30 s, per
+  placements), Living{count u16, placements}, Keepalive (writer thread, 1 s; read timeout 30 s, per
   Baldi's link-health lesson). A protocol mismatch shows in `coop_status()` and nothing is applied.
 
 ## Building sync (protocol 4-5, 2026-10-30)
@@ -198,6 +200,29 @@ already paid through the shared budget; the host replays the client's builds at 
   Staff and animals walk on each copy on their own, so the replay takes the entity of that type
   *nearest* `from`, then selects it, picks it up and drops it at `to` like the player.
 
+## Living state (protocol 8, 2026-10-30)
+
+Each copy runs its own simulation, so animals and staff walk, escape, are born and die differently on
+the two sides. The host's set is the real one:
+- Once a second the host sends `Living`: every animal and staff member (type and position; guests are
+  left out). The client pairs each with its nearest same-type one (greedy). One more than 160 world
+  units off is replaced by a fresh one at the host's spot (`remove_entity` + `place_entity`; its name,
+  age and needs restart on the client, the host's is the real one). It creates what it lacks and
+  removes what the host doesn't have, at most 6 creates and removes per message. Entities the client's
+  player placed in the last 3 s, and one it is carrying, are left alone.
+  Two ways that failed: writing the position (`BFEntity::setWorldPos`) left the entity on its old map
+  tile, and 2 of 11 lab runs crashed on the next path build; the game's pick-up and drop left the
+  client carrying the entity, so its next click dropped it again as its own placement (a loop of
+  keepers). Carrying also matters the other way: a correction that replaced the keeper the player had
+  just picked up made the drop place nothing (3 of 11 runs failed `move_c2h` before the carried one was
+  excluded).
+- Only the player's own actions on animals and staff are sent: a removal counts only inside the
+  player's `removeSelectedEntity` (sell / fire button; coop detours it to set a flag). A death or
+  escape on either copy is that copy's simulation; the host's reaches the client through `Living`, the
+  client's is undone by it.
+- Guests are not synced: on the client they are decoration (income, admission and cash are the
+  host's).
+
 ## Our changes to openzt (branch `zoo-together`)
 
 - `openzt/src/coop.rs` (new, feature `coop`): session, wire format, ledgers, pause sync, zoo transfer,
@@ -260,6 +285,23 @@ it). The script handles both. Output: `vendor\openzt\target\i686-pc-windows-msvc
   first item is the $50 Snack Machine, then a map click). Selling through the bulldozer (the Delete key
   turns it on) did not work with posted clicks; it seems to pick the object under the *real* mouse,
   not checked. The lab sells through the game's sell path from Lua instead (`coop_test_sell`).
+
+### Results, living state (2026-10-30 11:04-, private\lab-results\*-summary.md)
+
+New checks: `living_match` (every host animal/staff member has a same-type one within 200 units on the
+client, counts equal), `living_birth` (a keeper made directly on the host, as a birth would be, shows
+up on the client within 4 s) and `living_death` (a keeper made directly on the client only is removed
+there within 4 s) and `living_drift` (the client's keeper is moved 450 units on the client only and
+is back within 120 units of the host's within 4 s). Mutant `no_living` (the host never sends
+`Living`) must fail birth, death and drift; `living_match` is not expected to fail there, since the
+copies can agree by chance. Normal 11:50 31/31; `no_living` 11:53 caught (exactly those three).
+Fixed on the way: the death check first compared with the host's count (equal by chance under the
+mutant), and a 600-unit drift put the client's keeper off the map and crashed that copy under
+`no_living` (no correction); 450 units toward the zoo is safe. After the correction changes above,
+full suite 13:44-14:08 (`20261030-140831-summary.md`): both normal runs 31/31, all 9 mutants caught,
+no crash. Lab bug on the way:
+`coop_living_list()` returned an empty string with no animals, and the console sends no reply for
+that, so the lab hung; it now returns "(none)".
 
 ### Results, paths (2026-10-30 10:50)
 
@@ -410,9 +452,12 @@ stole the reply meant for the next command. Each request now has its own reply c
   move a different one than the player did. A pick-up while the replaying player is carrying
   something of their own is untested. The exhibit's name is not synced
   (the replaying copy keeps the default "Exhibit N" for the exhibit itself).
-- Animals: tested with one adoption (African Elephant) by the client. After placement each copy
-  simulates the animal on its own, so escapes, deaths, births and happiness diverge, and their
-  modal message boxes ("... has escaped") appear on each copy separately. Firing staff and selling
+- Animals: tested with one adoption (African Elephant) by the client. Positions, births and deaths
+  follow the host once a second (tested with keepers; teleporting a walking animal mid-path is not
+  checked for side effects). Needs, happiness, hunger and pregnancy are not synced, and the modal
+  message boxes ("... has escaped") still come from each copy's own simulation. Matching is by type
+  and nearest position, so two animals of a type that cross paths can swap identities on the client.
+- Guests are not synced at all. Firing staff and selling
   animals are not synced. Hired staff and animals walk independently on each copy.
 - The admission price is changed in the lab through the setter, not by clicking the price panel.
 - Cursors are only tested with the lab's faked position, never a real mouse, and with both copies
