@@ -1,8 +1,8 @@
 From beed50b7f5098f3cbb80e31447184686bcd50973 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 01:22:29 +0200
-Subject: [PATCH] ZooTogether: host-authoritative shared budget over TCP (coop
- feature)
+Subject: [PATCH 1/2] ZooTogether: host-authoritative shared budget over TCP
+ (coop feature)
 
 - coop.rs: session, framed wire protocol, client/host spend ledgers, Lua commands
   (coop_host/join/stop/status/cash, lab helpers coop_test_spend/coop_load_zoo), unit tests
@@ -823,6 +823,1009 @@ index b81a048..260db83 100644
          unsafe { mut_from_memory::<ZTGameMgr>(this) }.subtract_cash(amount);
      }
  
+-- 
+2.56.0.windows.3
+
+
+From e8c69374d76e8860a39f03cf99191bf42b78d805 Mon Sep 17 00:00:00 2001
+From: multiplayereverything <multiplayereverythingofficial@gmail.com>
+Date: Fri, 30 Oct 2026 03:31:53 +0200
+Subject: [PATCH 2/2] ZooTogether protocol 2: join-in-progress zoo transfer,
+ date and pause sync
+
+- Host saves its zoo through SAVE_GAME (save dialog detoured to a fixed path) and streams it in
+  32 KB chunks; the client loads it like the main menu's Load Saved Game and enters the game
+- State snapshot carries cash, date (SYSTEMTIME), paused flag and intent acks
+- Client pause toggles become acked requests; snapshots never undo an unsent toggle
+- coop_load_zoo now enters the game (LOAD_FILE, ZTGameMgr::start, hide start screen)
+- Lab helpers: coop_layout (placed-entity fingerprint), coop_set_pause, coop_test_shift_date
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ openzt/src/coop.rs       | 633 +++++++++++++++++++++++++++++++++------
+ openzt/src/ztgamemgr.rs  |  21 ++
+ openzt/src/ztworldmgr.rs |  27 ++
+ 3 files changed, 591 insertions(+), 90 deletions(-)
+
+diff --git a/openzt/src/coop.rs b/openzt/src/coop.rs
+index b62edd6..c52bee2 100644
+--- a/openzt/src/coop.rs
++++ b/openzt/src/coop.rs
+@@ -1,21 +1,27 @@
+-//! ZooTogether co-op: host-authoritative shared budget (first vertical slice).
++//! ZooTogether co-op: host-authoritative zoo session.
+ //!
+-//! The host's `ZTGameMgr::cash` is the only real budget. The host streams it to the client
+-//! (`CashState`, 5 Hz). Money the client's own vanilla code spends through `ZTGameMgr::subtractCash`
+-//! (buying objects, animals, staff...) is sent to the host as a `Spend` request and applied there; the
+-//! client shows `host_cash - spends the host has not acknowledged yet`, so a purchase never flickers
+-//! back. Guest income and other sim-side money on the client is overwritten by the next snapshot.
++//! The host's game is the only real simulation. What is shared today:
++//! - **The zoo itself at join time.** When a client says hello, the host saves its zoo through the
++//!   game's own `SAVE_GAME` (with the file dialog answered by [`save_detours`]) and streams the `.zoo` to
++//!   the client in `ZooChunk`s. The client loads it the way the main menu's "Load Saved Game" does and
++//!   enters the game. Until then the client ignores state snapshots.
++//! - **Budget, date and pause**, streamed by the host in `State` (5 Hz).
++//! - **Client intents:** money the client's own vanilla code spends through `ZTGameMgr::subtractCash`
++//!   (buying objects, animals, staff...) becomes `Spend{seq}`; a pause toggle on the client becomes
++//!   `Pause{seq}`. The host applies them and acks by sequence number in `State`, and the client keeps its
++//!   own prediction until the ack arrives, so nothing flickers back.
+ //!
+ //! Transport is plain TCP (Zoo Tycoon 2001 has no Steamworks): host listens, client connects by IP.
+ //! Frames are `u32 len (LE) | u8 type | payload`; `len` covers type + payload. A writer thread sends a
+ //! keepalive every second, so a stalled game thread never looks like a dead link.
+ //!
+-//! All game memory is touched only from [`tick`] and [`on_vanilla_subtract_cash`], both of which run on
+-//! the game thread. Network threads only move bytes between sockets and channels.
++//! All game memory is touched only from [`tick`], [`on_vanilla_subtract_cash`] and the Lua commands,
++//! which all run on the game thread. Network threads only move bytes between sockets and channels.
+ 
+ use std::{
+     io::{self, Read, Write},
+     net::{Shutdown, TcpListener, TcpStream},
++    path::PathBuf,
+     sync::{
+         Mutex,
+         atomic::{AtomicBool, Ordering},
+@@ -25,63 +31,100 @@ use std::{
+     time::{Duration, Instant},
+ };
+ 
+-use tracing::{info, warn};
++use openzt_detour_macro::detour_mod;
++use tracing::{error, info, warn};
+ 
+ use crate::{globals::globals, lua_fn};
+ 
+-pub const PROTOCOL_VERSION: u16 = 1;
++pub const PROTOCOL_VERSION: u16 = 2;
+ pub const DEFAULT_PORT: u16 = 27150;
+ const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(200);
+ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
+ const READ_TIMEOUT: Duration = Duration::from_secs(30);
+ const MAX_FRAME: u32 = 64 * 1024;
+-const OUTBOUND_QUEUE: usize = 256;
++const ZOO_CHUNK: usize = 32 * 1024;
++const MAX_ZOO_BYTES: u32 = 64 * 1024 * 1024;
++const OUTBOUND_QUEUE: usize = 4096;
+ 
+ // ---------------------------------------------------------------------------------------------
+ // Wire format
+ // ---------------------------------------------------------------------------------------------
+ 
+-#[derive(Debug, Clone, Copy, PartialEq)]
++#[derive(Debug, Clone, PartialEq)]
+ pub enum Msg {
+     Hello { protocol: u16, role: u8 },
+-    CashState { seq: u32, cash: f32, acked_spend: u32 },
++    State(WorldState),
+     Spend { seq: u32, amount: f32 },
++    Pause { seq: u32, paused: bool },
++    ZooChunk { offset: u32, total: u32, data: Vec<u8> },
++    ZooLoaded { ok: bool },
+     Keepalive,
+ }
+ 
++#[derive(Debug, Clone, Copy, PartialEq, Default)]
++pub struct WorldState {
++    pub seq: u32,
++    pub cash: f32,
++    pub acked_spend: u32,
++    pub acked_pause: u32,
++    pub paused: bool,
++    pub date: [u8; 16],
++}
++
+ const T_HELLO: u8 = 1;
+-const T_CASH: u8 = 2;
++const T_STATE: u8 = 2;
+ const T_SPEND: u8 = 3;
+ const T_KEEPALIVE: u8 = 4;
++const T_PAUSE: u8 = 5;
++const T_ZOO_CHUNK: u8 = 6;
++const T_ZOO_LOADED: u8 = 7;
+ 
+ pub const ROLE_HOST: u8 = 1;
+ pub const ROLE_CLIENT: u8 = 2;
+ 
+ impl Msg {
+     pub fn encode(&self) -> Vec<u8> {
+-        let mut body = Vec::with_capacity(16);
+-        match *self {
++        let mut b = Vec::with_capacity(48);
++        match self {
+             Msg::Hello { protocol, role } => {
+-                body.push(T_HELLO);
+-                body.extend_from_slice(&protocol.to_le_bytes());
+-                body.push(role);
++                b.push(T_HELLO);
++                b.extend_from_slice(&protocol.to_le_bytes());
++                b.push(*role);
+             }
+-            Msg::CashState { seq, cash, acked_spend } => {
+-                body.push(T_CASH);
+-                body.extend_from_slice(&seq.to_le_bytes());
+-                body.extend_from_slice(&cash.to_le_bytes());
+-                body.extend_from_slice(&acked_spend.to_le_bytes());
++            Msg::State(s) => {
++                b.push(T_STATE);
++                b.extend_from_slice(&s.seq.to_le_bytes());
++                b.extend_from_slice(&s.cash.to_le_bytes());
++                b.extend_from_slice(&s.acked_spend.to_le_bytes());
++                b.extend_from_slice(&s.acked_pause.to_le_bytes());
++                b.push(s.paused as u8);
++                b.extend_from_slice(&s.date);
+             }
+             Msg::Spend { seq, amount } => {
+-                body.push(T_SPEND);
+-                body.extend_from_slice(&seq.to_le_bytes());
+-                body.extend_from_slice(&amount.to_le_bytes());
++                b.push(T_SPEND);
++                b.extend_from_slice(&seq.to_le_bytes());
++                b.extend_from_slice(&amount.to_le_bytes());
++            }
++            Msg::Pause { seq, paused } => {
++                b.push(T_PAUSE);
++                b.extend_from_slice(&seq.to_le_bytes());
++                b.push(*paused as u8);
+             }
+-            Msg::Keepalive => body.push(T_KEEPALIVE),
++            Msg::ZooChunk { offset, total, data } => {
++                b.push(T_ZOO_CHUNK);
++                b.extend_from_slice(&offset.to_le_bytes());
++                b.extend_from_slice(&total.to_le_bytes());
++                b.extend_from_slice(data);
++            }
++            Msg::ZooLoaded { ok } => {
++                b.push(T_ZOO_LOADED);
++                b.push(*ok as u8);
++            }
++            Msg::Keepalive => b.push(T_KEEPALIVE),
+         }
+-        let mut out = Vec::with_capacity(4 + body.len());
+-        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+-        out.extend_from_slice(&body);
++        let mut out = Vec::with_capacity(4 + b.len());
++        out.extend_from_slice(&(b.len() as u32).to_le_bytes());
++        out.extend_from_slice(&b);
+         out
+     }
+ 
+@@ -91,10 +134,26 @@ impl Msg {
+         let u16_at = |i: usize| p.get(i..i + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+         let u32_at = |i: usize| p.get(i..i + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+         let f32_at = |i: usize| u32_at(i).map(f32::from_bits);
++        let bool_at = |i: usize| p.get(i).and_then(|&v| if v <= 1 { Some(v == 1) } else { None });
+         match t {
+             T_HELLO if p.len() == 3 => Some(Msg::Hello { protocol: u16_at(0)?, role: p[2] }),
+-            T_CASH if p.len() == 12 => Some(Msg::CashState { seq: u32_at(0)?, cash: f32_at(4)?, acked_spend: u32_at(8)? }),
++            T_STATE if p.len() == 33 => Some(Msg::State(WorldState {
++                seq: u32_at(0)?,
++                cash: f32_at(4)?,
++                acked_spend: u32_at(8)?,
++                acked_pause: u32_at(12)?,
++                paused: bool_at(16)?,
++                date: p[17..33].try_into().ok()?,
++            })),
+             T_SPEND if p.len() == 8 => Some(Msg::Spend { seq: u32_at(0)?, amount: f32_at(4)? }),
++            T_PAUSE if p.len() == 5 => Some(Msg::Pause { seq: u32_at(0)?, paused: bool_at(4)? }),
++            T_ZOO_CHUNK if p.len() >= 8 => {
++                let (offset, total) = (u32_at(0)?, u32_at(4)?);
++                let data = p[8..].to_vec();
++                (total <= MAX_ZOO_BYTES && offset as u64 + data.len() as u64 <= total as u64)
++                    .then_some(Msg::ZooChunk { offset, total, data })
++            }
++            T_ZOO_LOADED if p.len() == 1 => Some(Msg::ZooLoaded { ok: bool_at(0)? }),
+             T_KEEPALIVE if p.is_empty() => Some(Msg::Keepalive),
+             _ => None,
+         }
+@@ -113,6 +172,19 @@ fn read_frame(stream: &mut TcpStream) -> io::Result<Msg> {
+     Msg::decode(&body).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "unknown or malformed frame"))
+ }
+ 
++/// Splits a saved zoo into wire chunks.
++pub fn zoo_chunks(bytes: &[u8]) -> Vec<Msg> {
++    let total = bytes.len() as u32;
++    if bytes.is_empty() {
++        return vec![Msg::ZooChunk { offset: 0, total: 0, data: Vec::new() }];
++    }
++    bytes
++        .chunks(ZOO_CHUNK)
++        .enumerate()
++        .map(|(i, c)| Msg::ZooChunk { offset: (i * ZOO_CHUNK) as u32, total, data: c.to_vec() })
++        .collect()
++}
++
+ // ---------------------------------------------------------------------------------------------
+ // Pure session logic (no game memory, unit-tested)
+ // ---------------------------------------------------------------------------------------------
+@@ -142,7 +214,7 @@ impl ClientLedger {
+     }
+ }
+ 
+-/// Host-side bookkeeping: applies each client spend exactly once, in order.
++/// Host-side bookkeeping: applies each client intent exactly once, in order.
+ #[derive(Debug, Default)]
+ pub struct HostLedger {
+     pub last_applied: u32,
+@@ -159,6 +231,74 @@ impl HostLedger {
+     }
+ }
+ 
++/// Client-side pause: a local toggle becomes a request; host state wins once the request is acked.
++#[derive(Debug, Default)]
++pub struct PauseSync {
++    next_seq: u32,
++    pending: Option<u32>,
++    /// The pause state the client last saw from the host (or set itself from the host).
++    applied: bool,
++}
++
++pub enum PauseAction {
++    None,
++    /// Tell the host the client toggled pause.
++    Request { seq: u32, paused: bool },
++    /// Make the local game match the host.
++    Apply(bool),
++}
++
++impl PauseSync {
++    /// Called every client tick with the local pause flag.
++    pub fn on_local(&mut self, local: bool) -> PauseAction {
++        if self.pending.is_none() && local != self.applied {
++            self.next_seq += 1;
++            self.pending = Some(self.next_seq);
++            self.applied = local;
++            return PauseAction::Request { seq: self.next_seq, paused: local };
++        }
++        PauseAction::None
++    }
++
++    /// Called for each host snapshot.
++    pub fn on_host(&mut self, host_paused: bool, acked: u32, local: bool) -> PauseAction {
++        if self.pending.is_some_and(|s| acked >= s) {
++            self.pending = None;
++        }
++        // Waiting for the host to ack our request, or a local toggle [`Self::on_local`] hasn't sent yet:
++        // the snapshot is older than the player's choice, so it must not undo it.
++        if self.pending.is_some() || local != self.applied {
++            return PauseAction::None;
++        }
++        self.applied = host_paused;
++        if host_paused != local { PauseAction::Apply(host_paused) } else { PauseAction::None }
++    }
++}
++
++/// Client-side reassembly of the host's zoo file.
++#[derive(Debug, Default)]
++pub struct ZooAssembly {
++    buf: Vec<u8>,
++    received: u32,
++}
++
++impl ZooAssembly {
++    /// Adds a chunk; returns the whole file once every byte has arrived.
++    pub fn add(&mut self, offset: u32, total: u32, data: &[u8]) -> Option<Vec<u8>> {
++        if offset == 0 {
++            self.buf = vec![0u8; total as usize];
++            self.received = 0;
++        }
++        if self.buf.len() != total as usize {
++            return None;
++        }
++        let end = offset as usize + data.len();
++        self.buf.get_mut(offset as usize..end)?.copy_from_slice(data);
++        self.received += data.len() as u32;
++        (self.received == total).then(|| std::mem::take(&mut self.buf))
++    }
++}
++
+ // ---------------------------------------------------------------------------------------------
+ // Connection threads
+ // ---------------------------------------------------------------------------------------------
+@@ -239,7 +379,14 @@ struct Session {
+     last_snapshot: Instant,
+     snapshot_seq: u32,
+     host: HostLedger,
++    host_pause: HostLedger,
+     client: ClientLedger,
++    pause: PauseSync,
++    /// Host: a client asked for the zoo and is waiting for it.
++    zoo_send_pending: bool,
++    /// Client: the host's zoo is loaded, so host state may be applied.
++    world_ready: bool,
++    zoo: ZooAssembly,
+     stats: Stats,
+ }
+ 
+@@ -249,6 +396,9 @@ struct Stats {
+     snapshots_applied: u32,
+     spends_sent: u32,
+     spends_applied: u32,
++    pauses_sent: u32,
++    pauses_applied: u32,
++    zoo_bytes: u32,
+     last_host_cash: f32,
+     last_error: String,
+ }
+@@ -265,7 +415,12 @@ impl Session {
+             last_snapshot: Instant::now(),
+             snapshot_seq: 0,
+             host: HostLedger::default(),
++            host_pause: HostLedger::default(),
+             client: ClientLedger::default(),
++            pause: PauseSync::default(),
++            zoo_send_pending: false,
++            world_ready: false,
++            zoo: ZooAssembly::default(),
+             stats: Stats::default(),
+         }
+     }
+@@ -289,6 +444,10 @@ fn with_session<R>(f: impl FnOnce(&mut Session) -> R) -> R {
+     f(guard.get_or_insert_with(Session::new))
+ }
+ 
++fn mutant(name: &str) -> bool {
++    std::env::var_os("ZT_COOP_MUTANT").is_some_and(|m| m == name)
++}
++
+ fn host(port: u16) -> Result<String, String> {
+     let listener = TcpListener::bind(("0.0.0.0", port)).map_err(|e| format!("bind {port}: {e}"))?;
+     let events = with_session(|s| {
+@@ -300,7 +459,7 @@ fn host(port: u16) -> Result<String, String> {
+         for stream in listener.incoming() {
+             match stream {
+                 Ok(stream) => {
+-                    // First slice: one client. A second connection replaces the first.
++                    // One client for now. A second connection replaces the first.
+                     match spawn_link(stream, events.clone(), ROLE_HOST) {
+                         Ok(link) => {
+                             let mut guard = SESSION.lock().unwrap();
+@@ -326,6 +485,7 @@ fn join(addr: &str) -> Result<String, String> {
+     let stream = TcpStream::connect(&addr).map_err(|e| format!("connect {addr}: {e}"))?;
+     let events = with_session(|s| {
+         s.role = Role::Client;
++        s.world_ready = false;
+         s.events_tx.clone()
+     });
+     let link = spawn_link(stream, events, ROLE_CLIENT).map_err(|e| e.to_string())?;
+@@ -351,15 +511,22 @@ fn status() -> String {
+     with_session(|s| {
+         let cash = game_cash().map(|c| format!("{c:.2}")).unwrap_or_else(|| "none".into());
+         format!(
+-            "role={:?} connected={} cash={} host_cash={:.2} snapshots_sent={} snapshots_applied={} spends_sent={} spends_applied={} pending={} last_error={}",
++            "role={:?} connected={} world_ready={} in_game={} paused={} date={} cash={} host_cash={:.2} snapshots_sent={} snapshots_applied={} spends_sent={} spends_applied={} pauses_sent={} pauses_applied={} zoo_bytes={} pending={} last_error={}",
+             s.role,
+             s.peer_ok,
++            s.world_ready,
++            in_game(),
++            game_paused(),
++            date_string(),
+             cash,
+             s.stats.last_host_cash,
+             s.stats.snapshots_sent,
+             s.stats.snapshots_applied,
+             s.stats.spends_sent,
+             s.stats.spends_applied,
++            s.stats.pauses_sent,
++            s.stats.pauses_applied,
++            s.stats.zoo_bytes,
+             s.client.pending(),
+             if s.stats.last_error.is_empty() { "-" } else { &s.stats.last_error }
+         )
+@@ -370,34 +537,86 @@ fn status() -> String {
+ // Game integration
+ // ---------------------------------------------------------------------------------------------
+ 
+-fn game_cash() -> Option<f32> {
++const GLOBAL_BFUIMGR: u32 = 0x00638de0;
++/// The start screen (main menu) UI element, hidden by the menu's own "Load Saved Game" handler.
++const UI_START_SCREEN: i32 = 0x1a;
++/// `ZTApp` is a static object at 0x638148; `ztui_main::pauseGame`/`unpauseGame` set/clear this byte
++/// (`mov byte ptr [ecx+0x440], al` with `ecx = 0x638148`).
++const PAUSED_FLAG: u32 = 0x00638148 + 0x440;
++
++fn gm() -> Option<&'static mut crate::ztgamemgr::ZTGameMgr> {
+     let ptr = globals().ztgamemgr_ptr();
+-    if ptr.is_null() { None } else { Some(unsafe { (*ptr).cash() }) }
++    if ptr.is_null() { None } else { Some(unsafe { &mut *ptr }) }
+ }
+ 
+-fn set_game_cash(value: f32) {
+-    let ptr = globals().ztgamemgr_ptr();
+-    if !ptr.is_null() {
+-        unsafe { (*ptr).set_cash_and_refresh(value) };
++fn game_cash() -> Option<f32> {
++    gm().map(|g| g.cash())
++}
++
++fn in_game() -> bool {
++    gm().is_some_and(|g| g.is_started())
++}
++
++fn game_paused() -> bool {
++    unsafe { *(PAUSED_FLAG as *const u8) != 0 }
++}
++
++fn set_game_paused(paused: bool) {
++    use openzt_detour::generated::ztui_main::{PAUSE_GAME, UNPAUSE_GAME};
++    if paused {
++        unsafe { PAUSE_GAME.original()() };
++    } else {
++        unsafe { UNPAUSE_GAME.original()() };
+     }
+ }
+ 
++fn date_string() -> String {
++    gm().map(|g| {
++        let d = g.coop_date_bytes();
++        let w = |i: usize| u16::from_le_bytes([d[i], d[i + 1]]);
++        format!("{:04}-{:02}-{:02}T{:02}:{:02}", w(0), w(2), w(6), w(8), w(10))
++    })
++    .unwrap_or_else(|| "none".into())
++}
++
++/// Adds `days` to a raw `SYSTEMTIME` (via `FILETIME`, 100 ns ticks).
++fn shift_systemtime(bytes: [u8; 16], days: i32) -> Option<[u8; 16]> {
++    use windows::Win32::{
++        Foundation::{FILETIME, SYSTEMTIME},
++        System::Time::{FileTimeToSystemTime, SystemTimeToFileTime},
++    };
++    let st: SYSTEMTIME = unsafe { std::mem::transmute(bytes) };
++    let mut ft = FILETIME::default();
++    unsafe { SystemTimeToFileTime(&st, &mut ft) }.ok()?;
++    let ticks = ((ft.dwHighDateTime as i64) << 32 | ft.dwLowDateTime as i64) + days as i64 * 864_000_000_000;
++    let ft = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
++    let mut out = SYSTEMTIME::default();
++    unsafe { FileTimeToSystemTime(&ft, &mut out) }.ok()?;
++    Some(unsafe { std::mem::transmute::<SYSTEMTIME, [u8; 16]>(out) })
++}
++
++fn coop_dir() -> PathBuf {
++    crate::util::get_base_path().join("Saved Games")
++}
++
+ /// Called from the `ZTGameMgr::subtractCash` detour (vanilla callers only) before the local
+ /// subtraction is applied. On the client the spend is also sent to the host.
+ pub fn on_vanilla_subtract_cash(amount: f32) {
+     if !IS_CLIENT.load(Ordering::Relaxed) {
+         return;
+     }
+-    with_session(|s| {
+-        if s.role != Role::Client {
+-            return;
+-        }
+-        let seq = s.client.record_spend(amount);
+-        if s.send(Msg::Spend { seq, amount }) {
+-            s.stats.spends_sent += 1;
+-        }
+-        info!("coop: client spend #{seq} {amount}");
+-    });
++    // try_lock: when `tick` itself holds the session (loading the host's zoo, applying state), any
++    // subtractCash the game makes inside that call is not a player purchase, and blocking would deadlock.
++    let Ok(mut guard) = SESSION.try_lock() else { return };
++    let Some(s) = guard.as_mut() else { return };
++    if s.role != Role::Client || !s.world_ready {
++        return;
++    }
++    let seq = s.client.record_spend(amount);
++    if s.send(Msg::Spend { seq, amount }) {
++        s.stats.spends_sent += 1;
++    }
++    info!("coop: client spend #{seq} {amount}");
+ }
+ 
+ /// Runs once per game frame on the game thread (from the `ZTApp::updateSim` detour).
+@@ -407,6 +626,7 @@ pub fn tick() {
+     if s.role == Role::Off {
+         return;
+     }
++    client_pause_tick(s);
+ 
+     while let Ok(ev) = s.events_rx.try_recv() {
+         match ev {
+@@ -424,48 +644,191 @@ pub fn tick() {
+                 }
+                 info!("coop: peer hello role={role}");
+                 s.peer_ok = true;
++                if s.role == Role::Host && role == ROLE_CLIENT {
++                    s.zoo_send_pending = true;
++                }
+             }
+             NetEvent::Msg(Msg::Spend { seq, amount }) if s.role == Role::Host => {
+                 // Lab mutant: proves the lab catches a host that never applies client spends.
+-                if std::env::var_os("ZT_COOP_MUTANT").is_some_and(|m| m == "drop_spend") {
++                if mutant("drop_spend") {
+                     continue;
+                 }
+-                if let Some(a) = s.host.accept(seq, amount) {
+-                    let ptr = globals().ztgamemgr_ptr();
+-                    if !ptr.is_null() {
+-                        unsafe { (*ptr).subtract_cash(a) };
+-                    }
++                if let (Some(a), Some(g)) = (s.host.accept(seq, amount), gm()) {
++                    g.subtract_cash(a);
+                     s.stats.spends_applied += 1;
+                     info!("coop: applied client spend #{seq} {a}");
+                 }
+             }
+-            NetEvent::Msg(Msg::CashState { cash, acked_spend, .. }) if s.role == Role::Client => {
+-                let shown = s.client.apply_snapshot(cash, acked_spend);
+-                s.stats.last_host_cash = cash;
++            NetEvent::Msg(Msg::Pause { seq, paused }) if s.role == Role::Host => {
++                if s.host_pause.accept(seq, 0.0).is_some() {
++                    if game_paused() != paused {
++                        set_game_paused(paused);
++                    }
++                    s.stats.pauses_applied += 1;
++                    info!("coop: applied client pause #{seq} {paused}");
++                }
++            }
++            NetEvent::Msg(Msg::ZooLoaded { ok }) if s.role == Role::Host => {
++                info!("coop: client loaded the zoo: {ok}");
++            }
++            NetEvent::Msg(Msg::ZooChunk { offset, total, data }) if s.role == Role::Client => {
++                if let Some(bytes) = s.zoo.add(offset, total, &data) {
++                    s.stats.zoo_bytes = bytes.len() as u32;
++                    let ok = match load_zoo_bytes(&bytes) {
++                        Ok(m) => {
++                            info!("coop: {m}");
++                            true
++                        }
++                        Err(e) => {
++                            error!("coop: loading the host's zoo failed: {e}");
++                            s.stats.last_error = e;
++                            false
++                        }
++                    };
++                    s.world_ready = ok;
++                    s.send(Msg::ZooLoaded { ok });
++                }
++            }
++            NetEvent::Msg(Msg::State(st)) if s.role == Role::Client && s.world_ready => {
++                let Some(g) = gm() else { continue };
++                g.set_cash_and_refresh(s.client.apply_snapshot(st.cash, st.acked_spend));
++                if !mutant("no_date") {
++                    g.coop_set_date_bytes(st.date);
++                }
++                if let PauseAction::Apply(p) = s.pause.on_host(st.paused, st.acked_pause, game_paused()) {
++                    set_game_paused(p);
++                }
++                s.stats.last_host_cash = st.cash;
+                 s.stats.snapshots_applied += 1;
+-                set_game_cash(shown);
+             }
+             NetEvent::Msg(_) => {}
+         }
+     }
+ 
+-    if s.role == Role::Host && s.peer_ok && s.last_snapshot.elapsed() >= SNAPSHOT_INTERVAL {
++    if s.role == Role::Host {
++        host_tick(s);
++    }
++}
++
++/// Client: turn a local pause toggle into a request. Runs before incoming snapshots are applied, so a
++/// toggle made since the last frame is never mistaken for drift and undone.
++fn client_pause_tick(s: &mut Session) {
++    if s.role == Role::Client && s.world_ready && s.peer_ok {
++        if let PauseAction::Request { seq, paused } = s.pause.on_local(game_paused()) {
++            if s.send(Msg::Pause { seq, paused }) {
++                s.stats.pauses_sent += 1;
++            }
++        }
++    }
++}
++
++fn host_tick(s: &mut Session) {
++    if !s.peer_ok || !in_game() {
++        return;
++    }
++    if s.zoo_send_pending {
++        s.zoo_send_pending = false;
++        match save_zoo_bytes() {
++            Ok(bytes) => {
++                s.stats.zoo_bytes = bytes.len() as u32;
++                info!("coop: sending zoo ({} bytes)", bytes.len());
++                for chunk in zoo_chunks(&bytes) {
++                    if !s.send(chunk) {
++                        s.stats.last_error = "outbound queue full while sending the zoo".into();
++                        break;
++                    }
++                }
++            }
++            Err(e) => {
++                error!("coop: saving the zoo for the client failed: {e}");
++                s.stats.last_error = e;
++            }
++        }
++    }
++    if s.last_snapshot.elapsed() >= SNAPSHOT_INTERVAL {
+         s.last_snapshot = Instant::now();
+-        if let Some(cash) = game_cash() {
+-            s.snapshot_seq += 1;
+-            let msg = Msg::CashState { seq: s.snapshot_seq, cash, acked_spend: s.host.last_applied };
+-            if s.send(msg) {
+-                s.stats.snapshots_sent += 1;
+-                s.stats.last_host_cash = cash;
++        let Some(g) = gm() else { return };
++        s.snapshot_seq += 1;
++        let st = WorldState {
++            seq: s.snapshot_seq,
++            cash: g.cash(),
++            acked_spend: s.host.last_applied,
++            acked_pause: s.host_pause.last_applied,
++            paused: game_paused(),
++            date: g.coop_date_bytes(),
++        };
++        if s.send(Msg::State(st)) {
++            s.stats.snapshots_sent += 1;
++            s.stats.last_host_cash = st.cash;
++        }
++    }
++}
++
++// --- save / load ------------------------------------------------------------------------------
++
++/// Path the next `SAVE_GAME` writes to instead of asking the player (see [`save_detours`]).
++static SAVE_TARGET: Mutex<Option<std::ffi::CString>> = Mutex::new(None);
++
++/// `GetSaveFileNameA` wrapper used by `ztui_gameopts::SAVE_GAME` (0x4769ac → 0x477046). While
++/// [`SAVE_TARGET`] is set, it answers with that path instead of opening the dialog; `SAVE_GAME` then
++/// writes a normal save there with all of its own logic.
++#[detour_mod]
++mod save_detours {
++    use openzt_detour::generated::standalone::GET_SAVE_FILE_NAME_A;
++
++    use super::SAVE_TARGET;
++
++    #[detour(GET_SAVE_FILE_NAME_A)]
++    unsafe extern "stdcall" fn get_save_file_name(ofn: u32) -> bool {
++        if let Some(path) = SAVE_TARGET.lock().unwrap().as_ref() {
++            // OPENFILENAMEA: lpstrFile at +0x1c, nMaxFile at +0x20.
++            let buf = unsafe { *((ofn + 0x1c) as *const *mut u8) };
++            let max = unsafe { *((ofn + 0x20) as *const u32) } as usize;
++            let bytes = path.as_bytes_with_nul();
++            if !buf.is_null() && bytes.len() <= max {
++                unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, bytes.len()) };
++                return true;
+             }
+         }
++        unsafe { GET_SAVE_FILE_NAME_A_DETOUR.call(ofn) }
++    }
++}
++
++/// Saves the running zoo through the game's own `SAVE_GAME` and returns the file's bytes.
++fn save_zoo_bytes() -> Result<Vec<u8>, String> {
++    use openzt_detour::generated::ztui_gameopts::SAVE_GAME;
++    let path = coop_dir().join("zootogether-host.zoo");
++    let _ = std::fs::remove_file(&path);
++    let c = std::ffi::CString::new(path.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
++    *SAVE_TARGET.lock().unwrap() = Some(c);
++    let r = unsafe { SAVE_GAME.original()() };
++    *SAVE_TARGET.lock().unwrap() = None;
++    let bytes = std::fs::read(&path).map_err(|e| format!("SAVE_GAME returned {r:#x}, no file at {}: {e}", path.display()))?;
++    if bytes.is_empty() {
++        return Err("empty save".into());
+     }
++    Ok(bytes)
++}
++
++fn load_zoo_bytes(bytes: &[u8]) -> Result<String, String> {
++    let path = coop_dir().join("zootogether-from-host.zoo");
++    std::fs::write(&path, bytes).map_err(|e| format!("write {}: {e}", path.display()))?;
++    load_zoo(&path.to_string_lossy())
+ }
+ 
+-/// Loads a `.zoo` file (a save or a freeform map from `maps/`) the same way openzt's live test battery
+-/// does. Used by the lab so neither copy needs menu clicks.
++/// Loads a `.zoo` file (a save or a freeform map from `maps/`) and enters the game, mirroring the main
++/// menu's "Load Saved Game" handler (`ztui_startup::TRIGGER_LOAD` 0x4cc606 → `ztui_gameopts::LOAD_GAME`):
++/// `LOAD_FILE`, then `ZTGameMgr::start`, then hide the start screen. Must run on the game thread.
++///
++/// Only the from-the-main-menu path is lab-tested. Loading while already in a zoo skips the in-game
++/// handler's extra UI resets (0x4cb96a: persistent text, element 5, map view, `ZTGameMgr` vfunc 0x10).
+ fn load_zoo(path: &str) -> Result<String, String> {
+-    use openzt_detour::generated::{standalone::{FCLOSE, FOPEN}, ztui_gameopts::LOAD_FILE};
++    use openzt_detour::generated::{
++        bfuimgr::GET_ELEMENT_0,
++        standalone::{FCLOSE, FOPEN},
++        ztgamemgr::START,
++        ztui_gameopts::LOAD_FILE,
++    };
+     let c = std::ffi::CString::new(path).map_err(|e| e.to_string())?;
+     let file = unsafe { FOPEN.original()(c.as_ptr() as u32, c"rb".as_ptr()) };
+     if file.is_null() {
+@@ -473,7 +836,23 @@ fn load_zoo(path: &str) -> Result<String, String> {
+     }
+     let r = unsafe { LOAD_FILE.original()(file as *const u8) };
+     unsafe { FCLOSE.original()(file) };
+-    if r & 0xff != 0 { Ok(format!("loaded {path}")) } else { Err(format!("LOAD_FILE failed ({r:#x}) for {path}")) }
++    if r & 0xff == 0 {
++        return Err(format!("LOAD_FILE failed ({r:#x}) for {path}"));
++    }
++    let gm = globals().ztgamemgr_ptr();
++    if !gm.is_null() {
++        unsafe { START.hooked()(gm as i32) };
++    }
++    let start_screen = unsafe { GET_ELEMENT_0.original()(GLOBAL_BFUIMGR as *const u32, UI_START_SCREEN) };
++    if !start_screen.is_null() {
++        // vtable slot 0x48: UIElement hide (what the menu handler tail-calls).
++        unsafe {
++            let vtbl = *(start_screen as *const *const usize);
++            let hide: unsafe extern "thiscall" fn(*const u32) = std::mem::transmute(*vtbl.add(0x48 / 4));
++            hide(start_screen);
++        }
++    }
++    Ok(format!("loaded {path}"))
+ }
+ 
+ fn lua_result(r: Result<String, String>) -> (Option<String>, Option<String>) {
+@@ -484,6 +863,10 @@ fn lua_result(r: Result<String, String>) -> (Option<String>, Option<String>) {
+ }
+ 
+ pub fn init() {
++    if let Err(e) = unsafe { save_detours::init_detours() } {
++        error!("coop: failed to install save detour: {e:?}");
++    }
++
+     lua_fn!("coop_host", "ZooTogether: host a co-op session", "coop_host([port])", |port: Option<u16>| {
+         Ok(lua_result(host(port.unwrap_or(DEFAULT_PORT))))
+     });
+@@ -495,6 +878,13 @@ pub fn init() {
+     lua_fn!("coop_cash", "ZooTogether: current budget", "coop_cash()", || {
+         Ok(game_cash().map(|c| format!("{c:.2}")).unwrap_or_else(|| "none".into()))
+     });
++    lua_fn!("coop_layout", "ZooTogether: count and hash of placed, non-moving entities", "coop_layout()", || {
++        if !in_game() {
++            return Ok("count=0 hash=0 (not in a zoo)".to_string());
++        }
++        let (n, h) = crate::ztworldmgr::static_layout_fingerprint();
++        Ok(format!("count={n} hash={h:016x}"))
++    });
+     lua_fn!(
+         "coop_test_spend",
+         "ZooTogether lab: spend through the vanilla subtractCash entry point, like a purchase",
+@@ -508,7 +898,17 @@ pub fn init() {
+             Ok(format!("spent {amount}"))
+         }
+     );
+-    lua_fn!("coop_load_zoo", "ZooTogether lab: load a .zoo save or map file", "coop_load_zoo(path)", |path: String| {
++    lua_fn!("coop_set_pause", "ZooTogether lab: pause/unpause like the pause button", "coop_set_pause(bool)", |p: bool| {
++        set_game_paused(p);
++        Ok(format!("paused={}", game_paused()))
++    });
++    lua_fn!("coop_test_shift_date", "ZooTogether lab: move the in-game date by N days", "coop_test_shift_date(days)", |days: i32| {
++        let Some(g) = gm() else { return Ok("no ZTGameMgr".to_string()) };
++        let Some(shifted) = shift_systemtime(g.coop_date_bytes(), days) else { return Ok("date conversion failed".to_string()) };
++        g.coop_set_date_bytes(shifted);
++        Ok(date_string())
++    });
++    lua_fn!("coop_load_zoo", "ZooTogether: load a .zoo save or map file and enter the game", "coop_load_zoo(path)", |path: String| {
+         Ok(lua_result(load_zoo(&path)))
+     });
+ 
+@@ -536,28 +936,59 @@ pub fn init() {
+ mod tests {
+     use super::*;
+ 
++    fn round_trip(m: Msg) {
++        let bytes = m.encode();
++        let len = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
++        assert_eq!(len, bytes.len() - 4);
++        assert_eq!(Msg::decode(&bytes[4..]), Some(m));
++    }
++
+     #[test]
+     fn frames_round_trip() {
+-        let msgs = [
+-            Msg::Hello { protocol: PROTOCOL_VERSION, role: ROLE_CLIENT },
+-            Msg::CashState { seq: 7, cash: 12345.5, acked_spend: 3 },
+-            Msg::Spend { seq: 9, amount: 250.0 },
+-            Msg::Keepalive,
+-        ];
+-        for m in msgs {
+-            let bytes = m.encode();
+-            let len = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+-            assert_eq!(len, bytes.len() - 4);
+-            assert_eq!(Msg::decode(&bytes[4..]), Some(m));
+-        }
++        round_trip(Msg::Hello { protocol: PROTOCOL_VERSION, role: ROLE_CLIENT });
++        round_trip(Msg::State(WorldState {
++            seq: 7,
++            cash: 12345.5,
++            acked_spend: 3,
++            acked_pause: 2,
++            paused: true,
++            date: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
++        }));
++        round_trip(Msg::Spend { seq: 9, amount: 250.0 });
++        round_trip(Msg::Pause { seq: 4, paused: false });
++        round_trip(Msg::ZooChunk { offset: 32, total: 40, data: vec![9; 8] });
++        round_trip(Msg::ZooLoaded { ok: true });
++        round_trip(Msg::Keepalive);
+     }
+ 
+     #[test]
+     fn decode_rejects_bad_frames() {
+         assert_eq!(Msg::decode(&[]), None);
+         assert_eq!(Msg::decode(&[99]), None);
+-        assert_eq!(Msg::decode(&[T_CASH, 1, 2, 3]), None);
++        assert_eq!(Msg::decode(&[T_STATE, 1, 2, 3]), None);
+         assert_eq!(Msg::decode(&[T_KEEPALIVE, 0]), None);
++        assert_eq!(Msg::decode(&[T_PAUSE, 1, 0, 0, 0, 2]), None);
++        // Chunk running past the declared total.
++        let mut bad = vec![T_ZOO_CHUNK];
++        bad.extend_from_slice(&8u32.to_le_bytes());
++        bad.extend_from_slice(&10u32.to_le_bytes());
++        bad.extend_from_slice(&[0; 4]);
++        assert_eq!(Msg::decode(&bad), None);
++    }
++
++    #[test]
++    fn every_chunk_fits_a_frame() {
++        let zoo: Vec<u8> = (0..100_000u32).map(|i| i as u8).collect();
++        let chunks = zoo_chunks(&zoo);
++        assert!(chunks.iter().all(|c| c.encode().len() - 4 <= MAX_FRAME as usize));
++        let mut a = ZooAssembly::default();
++        let mut out = None;
++        for c in chunks {
++            if let Msg::ZooChunk { offset, total, data } = c {
++                out = a.add(offset, total, &data);
++            }
++        }
++        assert_eq!(out, Some(zoo));
+     }
+ 
+     #[test]
+@@ -565,9 +996,7 @@ mod tests {
+         let mut c = ClientLedger::default();
+         let a = c.record_spend(100.0);
+         let _b = c.record_spend(50.0);
+-        // Snapshot from before either spend reached the host.
+         assert_eq!(c.apply_snapshot(1000.0, 0), 850.0);
+-        // Host applied the first spend.
+         assert_eq!(c.apply_snapshot(900.0, a), 850.0);
+         assert_eq!(c.pending(), 1);
+         assert_eq!(c.apply_snapshot(850.0, a + 1), 850.0);
+@@ -583,6 +1012,29 @@ mod tests {
+         assert_eq!(h.accept(3, 5.0), Some(5.0));
+     }
+ 
++    #[test]
++    fn pause_request_survives_stale_snapshots() {
++        let mut p = PauseSync::default();
++        // Client presses pause.
++        let PauseAction::Request { seq, paused: true } = p.on_local(true) else { panic!("expected request") };
++        // A snapshot from before the host saw it must not unpause the client.
++        assert!(matches!(p.on_host(false, 0, true), PauseAction::None));
++        // Host acked and is paused: nothing to do.
++        assert!(matches!(p.on_host(true, seq, true), PauseAction::None));
++        // Host unpauses on its own: client follows.
++        assert!(matches!(p.on_host(false, seq, true), PauseAction::Apply(false)));
++        // Applying that locally is not a new client toggle.
++        assert!(matches!(p.on_local(false), PauseAction::None));
++    }
++
++    #[test]
++    fn snapshot_never_undoes_an_unsent_toggle() {
++        let mut p = PauseSync::default();
++        // Player paused, and a host snapshot (unpaused) is handled before on_local runs.
++        assert!(matches!(p.on_host(false, 0, true), PauseAction::None));
++        assert!(matches!(p.on_local(true), PauseAction::Request { paused: true, .. }));
++    }
++
+     #[test]
+     fn tcp_link_carries_frames() {
+         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+@@ -593,7 +1045,8 @@ mod tests {
+         let _link = spawn_link(client, tx, ROLE_CLIENT).unwrap();
+         let mut server = server;
+         assert_eq!(read_frame(&mut server).unwrap(), Msg::Hello { protocol: PROTOCOL_VERSION, role: ROLE_CLIENT });
+-        server.write_all(&Msg::CashState { seq: 1, cash: 42.0, acked_spend: 0 }.encode()).unwrap();
++        let st = Msg::State(WorldState { seq: 1, cash: 42.0, ..Default::default() });
++        server.write_all(&st.encode()).unwrap();
+         let mut got = None;
+         for _ in 0..3 {
+             if let Ok(NetEvent::Msg(m)) = rx.recv_timeout(Duration::from_secs(2)) {
+@@ -601,6 +1054,6 @@ mod tests {
+                 break;
+             }
+         }
+-        assert_eq!(got, Some(Msg::CashState { seq: 1, cash: 42.0, acked_spend: 0 }));
++        assert_eq!(got, Some(st));
+     }
+ }
+diff --git a/openzt/src/ztgamemgr.rs b/openzt/src/ztgamemgr.rs
+index 260db83..36b63ad 100644
+--- a/openzt/src/ztgamemgr.rs
++++ b/openzt/src/ztgamemgr.rs
+@@ -363,6 +363,27 @@ impl ZTGameMgr {
+         unsafe { ZTUI_MAIN_SET_MONEY_TEXT.original()() };
+     }
+ 
++    /// ZooTogether co-op: whether a zoo is running (`start()` ran, `stop()` hasn't).
++    #[cfg(feature = "coop")]
++    pub(crate) fn is_started(&self) -> bool {
++        self.started
++    }
++
++    /// ZooTogether co-op: the in-game date as its raw 16-byte `SYSTEMTIME`.
++    #[cfg(feature = "coop")]
++    pub(crate) fn coop_date_bytes(&self) -> [u8; 0x10] {
++        let mut out = [0u8; 0x10];
++        unsafe { std::ptr::copy_nonoverlapping(&self.date as *const Systemtime as *const u8, out.as_mut_ptr(), 0x10) };
++        out
++    }
++
++    /// ZooTogether co-op: applies the host's date and refreshes the on-screen date.
++    #[cfg(feature = "coop")]
++    pub(crate) fn coop_set_date_bytes(&mut self, bytes: [u8; 0x10]) {
++        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), &mut self.date as *mut Systemtime as *mut u8, 0x10) };
++        unsafe { ZTUI_MAIN_SET_DATE_TEXT.original()() };
++    }
++
+     /// Ports `ZTGameMgr::addCash` (`ZTGameMgr_addCash.c`): adds `amount` to the budget,
+     /// then refreshes the on-screen money display (`ZTUI::main::setMoneyText`).
+     pub fn add_cash(&mut self, amount: f32) {
+diff --git a/openzt/src/ztworldmgr.rs b/openzt/src/ztworldmgr.rs
+index 1ec6ce8..909a1f4 100644
+--- a/openzt/src/ztworldmgr.rs
++++ b/openzt/src/ztworldmgr.rs
+@@ -1298,6 +1298,33 @@ fn get_zt_world_mgr_entities(zt_world_mgr: &ZTWorldMgr) -> Vec<ZTEntityWithPtr>
+     entities
+ }
+ 
++/// ZooTogether co-op: (count, hash) over the zoo's placed, non-moving entities (buildings, scenery,
++/// fences, paths, tank walls/filters): class, type name and position. Two copies showing the same zoo
++/// layout give the same value; guests, animals, staff and food are left out because they move.
++#[cfg(feature = "coop")]
++pub(crate) fn static_layout_fingerprint() -> (usize, u64) {
++    use std::hash::{Hash, Hasher};
++    let mut items: Vec<(u32, String, u32, u32)> = get_zt_world_mgr_entities(globals().ztworldmgr())
++        .into_iter()
++        .filter(|e| {
++            matches!(
++                e.entity.class,
++                ZTEntityClass::Building
++                    | ZTEntityClass::Scenery
++                    | ZTEntityClass::Fences
++                    | ZTEntityClass::Path
++                    | ZTEntityClass::TankWall
++                    | ZTEntityClass::TankFilter
++            )
++        })
++        .map(|e| (e.entity.vtable, e.entity.name, e.entity.pos1, e.entity.pos2))
++        .collect();
++    items.sort();
++    let mut h = std::collections::hash_map::DefaultHasher::new();
++    items.hash(&mut h);
++    (items.len(), h.finish())
++}
++
+ fn get_zt_world_mgr_entities_2(zt_world_mgr: &ZTWorldMgr) -> Vec<BFEntity> {
+     let entity_array_start = zt_world_mgr.entity_array_start;
+     let entity_array_end = zt_world_mgr.entity_array_end;
 -- 
 2.56.0.windows.3
 

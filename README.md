@@ -1,17 +1,18 @@
 # Zoo Tycoon co-op (ZooTogether)
 
-Co-op for **Zoo Tycoon (2001)**: two players share one zoo budget. One player hosts, the other joins by IP.
+Co-op for **Zoo Tycoon (2001)**: one player hosts a zoo, a friend joins by IP and gets the same zoo, budget, date and pause.
 
-**Status: 0.1.0-dev, early prototype.** Only the budget is shared so far: purchases on either side
-come out of the host's money, and both players see the same number. Animals, buildings, guests and
-the date are not synced yet. See [handoff.md](handoff.md) for the plan, what is proven and what isn't.
+**Status: 0.2.0-dev, early prototype.** When a friend joins, they receive the host's zoo. After that
+the budget (purchases on either side come out of the host's money), the date and pause stay shared.
+Building after joining, animals, staff and guests are not synced yet. See [handoff.md](handoff.md) for the plan, what is proven and what isn't.
 
 ## How it works
 
 - Built on **[openzt](https://github.com/openzt1/openzt)** by the openzt authors, a Rust DLL the
   game loads as `res-openzt.dll`. This repo carries a patch on openzt (`patches/`), not a copy of it.
-- Host-authoritative: the host's game is the real one. The host sends its budget 5 times a second;
-  money the client spends is sent to the host as a request and applied there.
+- Host-authoritative: the host's game is the real one. On join the host saves its zoo and sends the
+  file; then it sends budget, date and pause 5 times a second. Money the client spends and the client's
+  pause button are sent to the host as requests and applied there.
 - Network: direct TCP, port **27150** (LAN, or forward the port / use a VPN such as Tailscale over
   the internet). The game has no Steamworks.
 
@@ -32,7 +33,8 @@ Zoo Tycoon folder as `res-openzt.dll`.
 
 ## Play (prototype)
 
-Set an environment variable before starting `zoo.exe`, then load the same zoo on both PCs:
+Set an environment variable before starting `zoo.exe`. The host loads a zoo; the client stays on the
+main menu and enters the host's zoo when it connects:
 
 - host: `ZT_COOP_HOST=27150`
 - client: `ZT_COOP_JOIN=<host ip>`
@@ -41,9 +43,9 @@ Or use openzt's Lua console (`127.0.0.1:8080`): `coop_host()`, `coop_join("ip")`
 
 ## Testing
 
-`scripts/setup-lab.ps1` makes two hardlinked copies of the game, and `python scripts/lab_money.py`
-runs them side by side and checks that the budget stays in sync (plus `--mutant nojoin` and
-`--mutant drop_spend`, which must fail).
+`scripts/setup-lab.ps1` makes two hardlinked copies of the game, and `python scripts/lab_coop.py`
+runs them side by side: the client joins, receives the zoo, and the budget, date and pause are checked
+both ways (plus `--mutant nojoin`, `--mutant drop_spend` and `--mutant no_date`, which must fail).
 
 ## Credits and license
 

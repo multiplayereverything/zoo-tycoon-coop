@@ -130,3 +130,40 @@ if __name__ == "__main__":
     for _ in range(30):
         time.sleep(1)
         park(pid)
+
+
+def capture(pid, path):
+    """Saves a PNG of the copy's main window (PrintWindow, works while parked off-screen).
+
+    Needs Pillow; the lab puts it on sys.path from a private folder.
+    """
+    from PIL import Image
+
+    g32 = ctypes.WinDLL("gdi32")
+    hwnds = windows_of(pid)
+    if not hwnds:
+        return False
+    hwnd = hwnds[0]
+    r = wt.RECT()
+    u32.GetClientRect(hwnd, ctypes.byref(r))
+    w, h = r.right, r.bottom
+    hdc = u32.GetDC(hwnd)
+    mdc = g32.CreateCompatibleDC(hdc)
+    bmp = g32.CreateCompatibleBitmap(hdc, w, h)
+    g32.SelectObject(mdc, bmp)
+    u32.PrintWindow(hwnd, mdc, 3)  # PW_CLIENTONLY | PW_RENDERFULLCONTENT
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [("biSize", wt.DWORD), ("biWidth", wt.LONG), ("biHeight", wt.LONG), ("biPlanes", wt.WORD),
+                    ("biBitCount", wt.WORD), ("biCompression", wt.DWORD), ("biSizeImage", wt.DWORD),
+                    ("biXPelsPerMeter", wt.LONG), ("biYPelsPerMeter", wt.LONG), ("biClrUsed", wt.DWORD),
+                    ("biClrImportant", wt.DWORD)]
+
+    bi = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
+    buf = ctypes.create_string_buffer(w * h * 4)
+    g32.GetDIBits(mdc, bmp, 0, h, buf, ctypes.byref(bi), 0)
+    g32.DeleteObject(bmp)
+    g32.DeleteDC(mdc)
+    u32.ReleaseDC(hwnd, hdc)
+    Image.frombuffer("RGBA", (w, h), buf, "raw", "BGRA", 0, 1).convert("RGB").save(path)
+    return True
