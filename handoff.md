@@ -1,7 +1,8 @@
 # ZooTogether — Zoo Tycoon (2001) co-op: plan and hand-off
 
-Status: **join-in-progress, budget, date and pause sync work in a two-copy lab** (see "Lab"),
-version 0.2.0-dev (protocol 2). Repo: https://github.com/multiplayereverything/zoo-tycoon-coop (no
+Status: **join-in-progress, budget, date, pause and player cursors work in a two-copy lab** (see
+"Lab"), version 0.3.0-dev (protocol 3). Building after join is **not** synced yet (see "Building sync").
+How to work on this repo: [AGENTS.md](AGENTS.md) (Karpathy guidelines + project rules). Repo: https://github.com/multiplayereverything/zoo-tycoon-coop (no
 release yet). Built on [openzt](https://github.com/openzt1/openzt) (by the openzt authors; LICENSE file
 GPL-3.0, Cargo metadata MIT/Apache-2.0, so this repo is GPL-3.0), a Rust DLL that the game loads as
 `res-openzt.dll` and that detours game functions at fixed addresses.
@@ -12,11 +13,12 @@ GPL-3.0, Cargo metadata MIT/Apache-2.0, so this repo is GPL-3.0), a Rust DLL tha
 Zoo Tycoon\                      the game install (Complete Collection, zoo.exe 1.0 build 12.4.0.9)
 Zoo Tycoon\ZooTogether\          this repo (the game never scans it)
   handoff.md                     this file
+  AGENTS.md                      working rules for agents and humans (Karpathy guidelines)
   scripts\build.cmd              builds res-openzt.dll with the coop feature (VS x86 env)
   scripts\setup-lab.ps1          makes private\lab-host + private\lab-client (hardlinked copies)
   scripts\zt_launch.py           starts a copy suspended, lifts the one-instance check, parks it
                                  off-screen, captures its window (PrintWindow, needs Pillow)
-  scripts\lab_coop.py            the two-copy co-op lab, 9 checks (+ 3 mutants)
+  scripts\lab_coop.py            the two-copy co-op lab, 13 checks (+ 4 mutants)
   scripts\get-openzt.ps1         clones openzt at df01b96 and applies the patch into vendor\openzt
   patches\openzt-zoo-together.patch   our changes to openzt, as patches on upstream df01b96
   vendor\openzt\                 openzt checkout, branch zoo-together (its own git repo, ignored here)
@@ -87,8 +89,19 @@ Phases:
    cleared by `ztui_main::PAUSE_GAME`/`UNPAUSE_GAME`. A client toggle becomes `Pause{seq}`; the host
    applies and acks it; the client keeps its choice until acked. Either player pausing pauses both.
    Zoo Tycoon 1 has no game-speed setting, so there is no speed to sync.
-4. **Building** (next): see the research section.
-5. Animals/staff/guests positions (interest-managed, low rate), exhibits, research, awards. Until then
+4. **Player cursors** (done): each player sends their mouse's map position in **world** units
+   (`Cursor`, at most every 100 ms, only when it changes; `None` when the mouse is off the map). The
+   other side projects it through its own camera and draws a yellow crosshair labelled "Player 2" /
+   "Host" on the back buffer just before the frame is presented (`GXVideoManager::flip` detour).
+   Geometry: `ZTMapView+0x360` is the `BFMap`; `BFMap+0x14/+0x18` is the camera origin in virtual
+   (projected screen-plane) pixels; `ZTMapView+0x4c/+0x50` is the view size; view pixel = virtual −
+   origin; `BFMap::virtualToWorld(this, out, in)` 0x4441ab and `worldToVirtual(this, out, in)` 0x40f041
+   convert (3 × i32); `UIElement::getScreenPos` gives the view's top-left. Back buffer:
+   `videomgr+0x20` (`IDirectDrawSurface`; `GetDC` slot 17, `ReleaseDC` slot 26); windowed mode Blts it
+   to the primary, fullscreen Flips. The local mouse comes from `GetCursorPos` + `ScreenToClient` on the
+   game thread's window.
+5. **Building** (next, in progress): see "Building sync".
+6. Animals/staff/guests positions (interest-managed, low rate), exhibits, research, awards. Until then
    each copy simulates guests and animals on its own from the join snapshot on.
 
 ## Networking
@@ -97,12 +110,36 @@ Phases:
   client: `coop_join("ip[:port]")`, or set `ZT_COOP_HOST=<port>` / `ZT_COOP_JOIN=<ip[:port]>` before
   launching. Over the internet the host must forward TCP 27150, or both use a VPN (Tailscale/ZeroTier).
 - Next: global mod relay (tunnel mode) so friends can join by room code without port forwarding.
-- Frames: `u32 len | u8 type | payload` (max 64 KB), protocol 2: Hello{protocol,role},
+- Frames: `u32 len | u8 type | payload` (max 64 KB), protocol 3: Hello{protocol,role},
   State{seq,cash,acked_spend,acked_pause,paused,date[16]}, Spend{seq,amount}, Pause{seq,paused},
-  ZooChunk{offset,total,data}, ZooLoaded{ok}, Keepalive (writer thread, 1 s; read timeout 30 s, per
+  ZooChunk{offset,total,data}, ZooLoaded{ok}, Cursor{visible,x,y,z}, Keepalive (writer thread, 1 s; read timeout 30 s, per
   Baldi's link-health lesson). A protocol mismatch shows in `coop_status()` and nothing is applied.
 
-## Building sync: research (2026-10-30, not implemented yet)
+## Building sync (2026-10-30: research only, not implemented)
+
+What is known for sure:
+- Every entity *type* class has `CREATE_ENTITY` at **vtable slot 0x5C** (scenery 0x6303f4+0x5c →
+  0x412977, building 0x6307e4+0x5c → 0x45134e, path 0x63049c+0x5c → 0x451b8a, fence 0x63034c+0x5c →
+  0x5b3a55; type vtables from openzt's `ztmapview.rs` notes).
+- `ZTMapView::placeEntityOnMap` (`PLACE_ENTITY_ON_MAP_1` 0x4d9088) is the drop of an entity the player
+  is *carrying* (picked up / moved, from `mode+0x10`), with a refund branch (`REFUND_CONSTRUCTION`,
+  `ADD_CASH`). It is called from the left-button-up handler (0x4d871e), 0x487da6 and undo (0x4de6cc).
+- `ZTMapView::setTempEntity` (0x4f189a, 35 callers) receives an **already created** entity; the buy
+  menu creates it somewhere earlier.
+
+What didn't work: searching for `call [reg+0x5c]` before `setTempEntity` finds nothing, and the many
+`+0x5c` calls inside `UNDO_LAST_ACTION_1` are on *entities*, not types, so slot numbers alone can't find
+the purchase path statically.
+
+Next step (concrete): trace a real purchase live. Detour the five type `CREATE_ENTITY` functions (log
+`this` = type, args, return, and the caller's return address), then make one purchase in a lab copy
+(or have the user click once). That names the buy path's create → position → `setTempEntity` → place
+sequence, which gives both the client hook (a purchase completed: type, tile, rotation) and the host
+primitive (`coop_place(type, x, y, rot)` on the same path). Removal: `REMOVE_ENTITY_FROM_MAP` 0x50a0b0 /
+`REMOVE_ENTITY` 0x50a432. The lab check is ready-made: `coop_layout()` must match on both copies after
+a place and after a remove, with a `drop_place` mutant.
+
+Earlier candidate list:
 
 Candidate hooks from openzt's generated table (zoo.exe VAs):
 - `ztmapview::PLACE_ENTITY_ON_MAP_1` 0x4d9088, `thiscall(mapview, entity, f32, rotation) -> *i32`.
@@ -128,8 +165,10 @@ here" helper on the same create+place path, since it can't click.
 ## Our changes to openzt (branch `zoo-together`)
 
 - `openzt/src/coop.rs` (new, feature `coop`): session, wire format, ledgers, pause sync, zoo transfer,
-  save-dialog detour, Lua commands (`coop_host/join/stop/status/cash/layout/load_zoo`, lab helpers
-  `coop_test_spend`, `coop_set_pause`, `coop_test_shift_date`), 8 unit tests.
+  save-dialog detour, cursor sync + `GXVideoManager::flip` detour that draws the other player's cursor,
+  Lua commands (`coop_host/join/stop/status/cash/layout/load_zoo`, lab helpers `coop_test_spend`,
+  `coop_set_pause`, `coop_test_shift_date`, `coop_test_cursor`, `coop_world_to_screen`), 8 unit tests.
+  user32/gdi32 calls are declared locally so openzt's `windows` crate features stay untouched.
 - `ztgamemgr.rs`: `set_cash_and_refresh`, `is_started`, `coop_date_bytes`/`coop_set_date_bytes`; the
   vanilla `subtractCash` detour reports spends to coop.
 - `ztworldmgr.rs`: `static_layout_fingerprint()` (count + hash of buildings, scenery, fences, paths,
@@ -150,7 +189,8 @@ it). The script handles both. Output: `vendor\openzt\target\i686-pc-windows-msvc
 ## Lab
 
 - `scripts\setup-lab.ps1` then `python scripts\lab_coop.py` (and `--mutant nojoin`,
-  `--mutant drop_spend`, `--mutant no_date`; `--shots` saves window captures). Copies run
+  `--mutant drop_spend`, `--mutant no_date`, `--mutant no_cursor`; `--shots` saves window captures and
+  needs Pillow importable by the lab's Python). Copies run
   below-normal priority, windowed 800x600 (the game's minimum mode; 640x360 isn't available), no intro
   movies, no openzt console window, **parked off-screen at (-4000,-4000) without focus, not
   minimized**: a minimized Zoo Tycoon window stops its whole game loop (no `updateSim`, so the console
@@ -159,7 +199,27 @@ it). The script handles both. Output: `vendor\openzt\target\i686-pc-windows-msvc
   start if another Zoo Tycoon window exists. `zt_launch.py` starts the copy suspended and patches that
   function to `xor eax,eax; ret` in memory only. Real players run one copy per PC and don't need it.
 
-### Results, protocol 2 (2026-10-30 03:23-03:29, private\lab-results\)
+### Results, protocol 3 (2026-10-30 05:10-05:15, private\lab-results\)
+
+All protocol-2 checks plus four cursor checks: client cursor faked at client pixel (400, 300) reaches
+the host as the same world position (`cursor_c2h`); projecting it back on the client lands within 8 px
+(`cursor_projection`, measured 400,304: the world position carries no terrain height); the host's
+`FLIP` detour draws it on its frames (`cursor_drawn`); the host cursor reaches the client
+(`cursor_h2c`).
+
+| Run | protocol-2 checks (9) | cursor_c2h | cursor_projection | cursor_drawn | cursor_h2c | Verdict |
+|---|---|---|---|---|---|---|
+| normal 05:10 | 9/9 ✅ | ✅ | ✅ | ✅ | ✅ | PASS |
+| normal 05:13 | 9/9 ✅ | ✅ | ✅ | ✅ | ✅ | PASS |
+| mutant `no_cursor` | 9/9 ✅ | ❌ | ✅ | ❌ | ✅ | PASS (caught) |
+| mutant `nojoin` | 1/9 (no_double) | ❌ | ❌ | ❌ | ❌ | PASS (caught) |
+| mutant `drop_spend` | 8/9 (client_spend ❌) | ✅ | ✅ | ✅ | ✅ | PASS (caught) |
+| mutant `no_date` | 8/9 (date ❌) | ✅ | ✅ | ✅ | ✅ | PASS (caught) |
+
+A capture of the host during the smoke test shows the yellow "Player 2" crosshair over the zoo
+entrance where the client's cursor was.
+
+### Results, protocol 2 (2026-10-30 03:23-03:29)
 
 The host loads `maps\default.zoo`, hosts, and gets +$5000; the client joins **from the main menu**.
 
@@ -195,6 +255,10 @@ stole the reply meant for the next command. Each request now has its own reply c
 ## Not proven / known gaps
 
 - Building after join is not synced: placing or removing anything shows up only on that player's copy.
+- Cursors are only tested with the lab's faked position, never a real mouse, and with both copies
+  looking at the same spot (same camera after join); a different camera/zoom/rotation on the two sides
+  is untested. The cursor is a world point at ground level (z=0), so on raised terrain it can sit a few
+  pixels low. The drawing uses GDI on the back buffer in windowed mode; fullscreen is untested.
   Guests, animals and staff are simulated separately on each copy from the join snapshot on.
 - Joining while the client is already inside a zoo is untested (only from the main menu); that path
   skips the in-game load handler's extra UI resets. A second join replaces the first client.

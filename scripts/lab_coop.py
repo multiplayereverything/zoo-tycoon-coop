@@ -13,10 +13,15 @@ Checks, in order:
   date           host date advances; host jumps +30 days and the client follows within 3 s
   host_pause     host pauses -> client paused; host unpauses -> client running
   client_pause   client pauses -> host paused (request acked); client unpauses -> host running
+  cursor_c2h     client's map cursor (faked at pixel 400,300) arrives at the host, same world position
+  cursor_projection  projecting that world position back on the client lands within 8 px of 400,300
+  cursor_drawn   the host draws the client's cursor on its frames (FLIP detour counter rises)
+  cursor_h2c     host's cursor arrives at the client
 
 --mutant nojoin      client never joins          -> zoo_transfer..client_spend must FAIL
 --mutant drop_spend  host ignores client spends  -> client_spend must FAIL, the rest pass
 --mutant no_date     client ignores host date    -> date must FAIL
+--mutant no_cursor   client never sends its cursor -> cursor_c2h and cursor_drawn must FAIL
 
 Writes private/lab-results/<timestamp>-<mutant>.json; exits 0 when the run's expectation holds.
 """
@@ -42,13 +47,15 @@ COOP_PORT = 27150
 MAP = "maps\\default.zoo"
 
 ALL_CHECKS = ["zoo_transfer", "layout", "cash_join", "host_change", "client_spend", "no_double", "date",
-              "host_pause", "client_pause"]
+              "host_pause", "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn"]
+CURSOR_CHECKS = {"cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn"}
 EXPECTED_FAIL = {
     None: set(),
     "nojoin": {"zoo_transfer", "layout", "cash_join", "host_change", "client_spend", "date", "host_pause",
-               "client_pause"},
+               "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn"},
     "drop_spend": {"client_spend"},
     "no_date": {"date"},
+    "no_cursor": {"cursor_c2h", "cursor_drawn"},
 }
 
 
@@ -114,8 +121,8 @@ def run(args, results):
     pids = results["pids"]
     base_env = {"OPENZT_NO_CONSOLE": "1"}
     client_env = dict(base_env)
-    if args.mutant == "no_date":
-        client_env["ZT_COOP_MUTANT"] = "no_date"
+    if args.mutant in ("no_date", "no_cursor"):
+        client_env["ZT_COOP_MUTANT"] = args.mutant
     host_env = dict(base_env)
     if args.mutant == "drop_spend":
         host_env["ZT_COOP_MUTANT"] = "drop_spend"
@@ -201,13 +208,31 @@ def run(args, results):
     c_unpaused = wait_until(lambda: status(HOST_CONSOLE).get("paused") == "false", 3)
     checks["client_pause"] = bool(c_paused and still and c_unpaused)
 
+    # Cursors. The lab fakes each mouse at a client-area pixel inside the map view.
+    lua(CLIENT_CONSOLE, "return coop_test_cursor(400, 300)")
+    c_local = status(CLIENT_CONSOLE).get("local_cursor")
+    checks["cursor_c2h"] = bool(c_local not in (None, "none") and wait_until(
+        lambda: status(HOST_CONSOLE).get("remote_cursor") == c_local, 3))
+    back = lua(CLIENT_CONSOLE, f"return coop_world_to_screen({c_local})") if c_local not in (None, "none") else "none"
+    m = re.match(r"(-?\d+),(-?\d+)", back)
+    # World positions carry no terrain height (z=0), so allow a few pixels.
+    checks["cursor_projection"] = bool(m and abs(int(m.group(1)) - 400) <= 8 and abs(int(m.group(2)) - 300) <= 8)
+    drawn0 = int(status(HOST_CONSOLE).get("cursors_drawn", 0))
+    time.sleep(1.5)
+    checks["cursor_drawn"] = checks["cursor_c2h"] and int(status(HOST_CONSOLE).get("cursors_drawn", 0)) > drawn0
+    lua(HOST_CONSOLE, "return coop_test_cursor(200, 150)")
+    h_local = status(HOST_CONSOLE).get("local_cursor")
+    checks["cursor_h2c"] = bool(h_local not in (None, "none") and wait_until(
+        lambda: status(CLIENT_CONSOLE).get("remote_cursor") == h_local, 3))
+    results["cursor"] = {"client_local": c_local, "client_projection": back, "host_local": h_local}
+
     results["status"] = {"host": lua(HOST_CONSOLE, "return coop_status()"),
                          "client": lua(CLIENT_CONSOLE, "return coop_status()")}
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mutant", choices=["nojoin", "drop_spend", "no_date"], default=None)
+    ap.add_argument("--mutant", choices=["nojoin", "drop_spend", "no_date", "no_cursor"], default=None)
     ap.add_argument("--keep", action="store_true", help="leave the copies running")
     ap.add_argument("--shots", action="store_true", help="save window captures (needs Pillow)")
     args = ap.parse_args()

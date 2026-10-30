@@ -1,7 +1,7 @@
 From beed50b7f5098f3cbb80e31447184686bcd50973 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 01:22:29 +0200
-Subject: [PATCH 1/2] ZooTogether: host-authoritative shared budget over TCP
+Subject: [PATCH 1/3] ZooTogether: host-authoritative shared budget over TCP
  (coop feature)
 
 - coop.rs: session, framed wire protocol, client/host spend ledgers, Lua commands
@@ -830,7 +830,7 @@ index b81a048..260db83 100644
 From e8c69374d76e8860a39f03cf99191bf42b78d805 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 03:31:53 +0200
-Subject: [PATCH 2/2] ZooTogether protocol 2: join-in-progress zoo transfer,
+Subject: [PATCH 2/3] ZooTogether protocol 2: join-in-progress zoo transfer,
  date and pause sync
 
 - Host saves its zoo through SAVE_GAME (save dialog detoured to a fixed path) and streams it in
@@ -1826,6 +1826,399 @@ index 1ec6ce8..909a1f4 100644
  fn get_zt_world_mgr_entities_2(zt_world_mgr: &ZTWorldMgr) -> Vec<BFEntity> {
      let entity_array_start = zt_world_mgr.entity_array_start;
      let entity_array_end = zt_world_mgr.entity_array_end;
+-- 
+2.56.0.windows.3
+
+
+From 0451b17ae2cc9fd5a5004d7f9081254fde9ddfc8 Mon Sep 17 00:00:00 2001
+From: multiplayereverything <multiplayereverythingofficial@gmail.com>
+Date: Fri, 30 Oct 2026 05:16:29 +0200
+Subject: [PATCH 3/3] ZooTogether protocol 3: player cursors
+
+- Cursor message (world position, 10 Hz max, on change) both ways
+- Screen<->world via ZTMapView/BFMap camera origin and virtualToWorld/worldToVirtual
+- GXVideoManager::flip detour draws the other player's crosshair on the back buffer
+- Lab helpers coop_test_cursor, coop_world_to_screen; no_cursor mutant
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ openzt/src/coop.rs | 251 ++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 249 insertions(+), 2 deletions(-)
+
+diff --git a/openzt/src/coop.rs b/openzt/src/coop.rs
+index c52bee2..5fc2ef0 100644
+--- a/openzt/src/coop.rs
++++ b/openzt/src/coop.rs
+@@ -36,7 +36,7 @@ use tracing::{error, info, warn};
+ 
+ use crate::{globals::globals, lua_fn};
+ 
+-pub const PROTOCOL_VERSION: u16 = 2;
++pub const PROTOCOL_VERSION: u16 = 3;
+ pub const DEFAULT_PORT: u16 = 27150;
+ const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(200);
+ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
+@@ -45,6 +45,7 @@ const MAX_FRAME: u32 = 64 * 1024;
+ const ZOO_CHUNK: usize = 32 * 1024;
+ const MAX_ZOO_BYTES: u32 = 64 * 1024 * 1024;
+ const OUTBOUND_QUEUE: usize = 4096;
++const CURSOR_INTERVAL: Duration = Duration::from_millis(100);
+ 
+ // ---------------------------------------------------------------------------------------------
+ // Wire format
+@@ -58,6 +59,8 @@ pub enum Msg {
+     Pause { seq: u32, paused: bool },
+     ZooChunk { offset: u32, total: u32, data: Vec<u8> },
+     ZooLoaded { ok: bool },
++    /// The sender's mouse position on the map, in world units (`None`: not over the map).
++    Cursor(Option<[i32; 3]>),
+     Keepalive,
+ }
+ 
+@@ -78,6 +81,7 @@ const T_KEEPALIVE: u8 = 4;
+ const T_PAUSE: u8 = 5;
+ const T_ZOO_CHUNK: u8 = 6;
+ const T_ZOO_LOADED: u8 = 7;
++const T_CURSOR: u8 = 8;
+ 
+ pub const ROLE_HOST: u8 = 1;
+ pub const ROLE_CLIENT: u8 = 2;
+@@ -120,6 +124,13 @@ impl Msg {
+                 b.push(T_ZOO_LOADED);
+                 b.push(*ok as u8);
+             }
++            Msg::Cursor(c) => {
++                b.push(T_CURSOR);
++                b.push(c.is_some() as u8);
++                for v in c.unwrap_or_default() {
++                    b.extend_from_slice(&v.to_le_bytes());
++                }
++            }
+             Msg::Keepalive => b.push(T_KEEPALIVE),
+         }
+         let mut out = Vec::with_capacity(4 + b.len());
+@@ -154,6 +165,10 @@ impl Msg {
+                     .then_some(Msg::ZooChunk { offset, total, data })
+             }
+             T_ZOO_LOADED if p.len() == 1 => Some(Msg::ZooLoaded { ok: bool_at(0)? }),
++            T_CURSOR if p.len() == 13 => {
++                let w = [u32_at(1)? as i32, u32_at(5)? as i32, u32_at(9)? as i32];
++                Some(Msg::Cursor(bool_at(0)?.then_some(w)))
++            }
+             T_KEEPALIVE if p.is_empty() => Some(Msg::Keepalive),
+             _ => None,
+         }
+@@ -387,6 +402,10 @@ struct Session {
+     /// Client: the host's zoo is loaded, so host state may be applied.
+     world_ready: bool,
+     zoo: ZooAssembly,
++    /// The other player's cursor (world units), drawn by the `FLIP` detour.
++    remote_cursor: Option<[i32; 3]>,
++    last_cursor_sent: Option<[i32; 3]>,
++    last_cursor_time: Instant,
+     stats: Stats,
+ }
+ 
+@@ -399,6 +418,7 @@ struct Stats {
+     pauses_sent: u32,
+     pauses_applied: u32,
+     zoo_bytes: u32,
++    cursors_sent: u32,
+     last_host_cash: f32,
+     last_error: String,
+ }
+@@ -421,6 +441,9 @@ impl Session {
+             zoo_send_pending: false,
+             world_ready: false,
+             zoo: ZooAssembly::default(),
++            remote_cursor: None,
++            last_cursor_sent: None,
++            last_cursor_time: Instant::now(),
+             stats: Stats::default(),
+         }
+     }
+@@ -511,7 +534,7 @@ fn status() -> String {
+     with_session(|s| {
+         let cash = game_cash().map(|c| format!("{c:.2}")).unwrap_or_else(|| "none".into());
+         format!(
+-            "role={:?} connected={} world_ready={} in_game={} paused={} date={} cash={} host_cash={:.2} snapshots_sent={} snapshots_applied={} spends_sent={} spends_applied={} pauses_sent={} pauses_applied={} zoo_bytes={} pending={} last_error={}",
++            "role={:?} connected={} world_ready={} in_game={} paused={} date={} cash={} host_cash={:.2} snapshots_sent={} snapshots_applied={} spends_sent={} spends_applied={} pauses_sent={} pauses_applied={} zoo_bytes={} pending={} local_cursor={} remote_cursor={} remote_screen={} cursors_sent={} cursors_drawn={} last_error={}",
+             s.role,
+             s.peer_ok,
+             s.world_ready,
+@@ -528,6 +551,11 @@ fn status() -> String {
+             s.stats.pauses_applied,
+             s.stats.zoo_bytes,
+             s.client.pending(),
++            fmt_vec(local_cursor_world()),
++            fmt_vec(s.remote_cursor),
++            s.remote_cursor.and_then(world_to_screen).map(|(x, y)| format!("{x},{y}")).unwrap_or_else(|| "none".into()),
++            s.stats.cursors_sent,
++            CURSORS_DRAWN.load(Ordering::Relaxed),
+             if s.stats.last_error.is_empty() { "-" } else { &s.stats.last_error }
+         )
+     })
+@@ -668,6 +696,7 @@ pub fn tick() {
+                     info!("coop: applied client pause #{seq} {paused}");
+                 }
+             }
++            NetEvent::Msg(Msg::Cursor(c)) => s.remote_cursor = c,
+             NetEvent::Msg(Msg::ZooLoaded { ok }) if s.role == Role::Host => {
+                 info!("coop: client loaded the zoo: {ok}");
+             }
+@@ -708,6 +737,21 @@ pub fn tick() {
+     if s.role == Role::Host {
+         host_tick(s);
+     }
++    cursor_tick(s);
++}
++
++/// Both roles: send this player's map cursor when it changes, at most every 100 ms.
++fn cursor_tick(s: &mut Session) {
++    let ready = s.peer_ok && in_game() && (s.role == Role::Host || s.world_ready);
++    if !ready || s.last_cursor_time.elapsed() < CURSOR_INTERVAL || mutant("no_cursor") {
++        return;
++    }
++    let c = local_cursor_world();
++    if c != s.last_cursor_sent && s.send(Msg::Cursor(c)) {
++        s.last_cursor_sent = c;
++        s.last_cursor_time = Instant::now();
++        s.stats.cursors_sent += 1;
++    }
+ }
+ 
+ /// Client: turn a local pause toggle into a request. Runs before incoming snapshots are applied, so a
+@@ -764,6 +808,197 @@ fn host_tick(s: &mut Session) {
+     }
+ }
+ 
++// --- player cursors -------------------------------------------------------------------------
++//
++// Geometry (from `ZTMapView::setViewCenter` 0x59b90c and `BFMap` conversions):
++// - `ZTMapView+0x360` is the `BFMap`; `BFMap+0x14/+0x18` is the camera origin in "virtual" pixels
++//   (the projected screen plane at the current zoom/rotation); `ZTMapView+0x4c/+0x50` is the view size.
++// - view-local pixel = virtual - origin; `BFMap::virtualToWorld(out, in)` / `worldToVirtual(out, in)`
++//   convert between virtual and world (3 x i32).
++// - `UIElement::getScreenPos` gives the map view's top-left in the window's client area.
++
++#[link(name = "user32")]
++unsafe extern "system" {
++    fn GetCursorPos(p: *mut [i32; 2]) -> i32;
++    fn ScreenToClient(hwnd: isize, p: *mut [i32; 2]) -> i32;
++    fn EnumThreadWindows(thread: u32, f: unsafe extern "system" fn(isize, isize) -> i32, l: isize) -> i32;
++    fn IsWindowVisible(hwnd: isize) -> i32;
++}
++#[link(name = "kernel32")]
++unsafe extern "system" {
++    fn GetCurrentThreadId() -> u32;
++}
++#[link(name = "gdi32")]
++unsafe extern "system" {
++    fn CreatePen(style: i32, width: i32, color: u32) -> isize;
++    fn SelectObject(hdc: isize, obj: isize) -> isize;
++    fn DeleteObject(obj: isize) -> i32;
++    fn GetStockObject(i: i32) -> isize;
++    fn Ellipse(hdc: isize, l: i32, t: i32, r: i32, b: i32) -> i32;
++    fn MoveToEx(hdc: isize, x: i32, y: i32, old: *mut [i32; 2]) -> i32;
++    fn LineTo(hdc: isize, x: i32, y: i32) -> i32;
++    fn SetBkMode(hdc: isize, mode: i32) -> i32;
++    fn SetTextColor(hdc: isize, color: u32) -> u32;
++    fn TextOutA(hdc: isize, x: i32, y: i32, s: *const u8, n: i32) -> i32;
++}
++
++static CURSORS_DRAWN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
++/// Lab: a fake mouse position in the window's client area (the lab can't move the real mouse).
++static TEST_CURSOR: Mutex<Option<(i32, i32)>> = Mutex::new(None);
++
++fn fmt_vec(v: Option<[i32; 3]>) -> String {
++    v.map(|[x, y, z]| format!("{x},{y},{z}")).unwrap_or_else(|| "none".into())
++}
++
++struct MapView {
++    view: *const u32,
++    map: *const u32,
++}
++
++impl MapView {
++    fn get() -> Option<MapView> {
++        use openzt_detour::generated::ztui_general::GET_MAPVIEW;
++        if !in_game() {
++            return None;
++        }
++        let view = unsafe { GET_MAPVIEW.original()() };
++        if view.is_null() {
++            return None;
++        }
++        let map = unsafe { *((view as u32 + 0x360) as *const *const u32) };
++        (!map.is_null()).then_some(MapView { view, map })
++    }
++
++    fn field(&self, base: *const u32, off: u32) -> i32 {
++        unsafe { *((base as u32 + off) as *const i32) }
++    }
++
++    /// Top-left of the map view in client pixels, and its size.
++    fn rect(&self) -> (i32, i32, i32, i32) {
++        use openzt_detour::generated::uielement::GET_SCREEN_POS;
++        let mut pos = [0i32; 2];
++        unsafe { GET_SCREEN_POS.original()(self.view, pos.as_mut_ptr()) };
++        (pos[0], pos[1], self.field(self.view, 0x4c), self.field(self.view, 0x50))
++    }
++
++    fn origin(&self) -> (i32, i32) {
++        (self.field(self.map, 0x14), self.field(self.map, 0x18))
++    }
++}
++
++/// Client-area pixel → world position, if the pixel is over the map view.
++fn screen_to_world(px: i32, py: i32) -> Option<[i32; 3]> {
++    use openzt_detour::generated::bfmap::VIRTUAL_TO_WORLD;
++    let mv = MapView::get()?;
++    let (sx, sy, w, h) = mv.rect();
++    let (lx, ly) = (px - sx, py - sy);
++    if lx < 0 || ly < 0 || lx >= w || ly >= h {
++        return None;
++    }
++    let (ox, oy) = mv.origin();
++    let virt = [ox + lx, oy + ly, 0];
++    let mut world = [0i32; 3];
++    // (this, out, in): the input is read from the second argument (0x4441e4).
++    unsafe { VIRTUAL_TO_WORLD.original()(mv.map, world.as_mut_ptr() as *const u32, virt.as_ptr()) };
++    Some(world)
++}
++
++/// World position → client-area pixel (may be off-screen).
++fn world_to_screen(world: [i32; 3]) -> Option<(i32, i32)> {
++    use openzt_detour::generated::bfmap::WORLD_TO_VIRTUAL_0;
++    let mv = MapView::get()?;
++    let (sx, sy, _, _) = mv.rect();
++    let (ox, oy) = mv.origin();
++    let mut virt = [0i32; 3];
++    unsafe { WORLD_TO_VIRTUAL_0.original()(mv.map, virt.as_mut_ptr(), world.as_ptr()) };
++    Some((virt[0] - ox + sx, virt[1] - oy + sy))
++}
++
++static GAME_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
++
++/// The game's visible top-level window (looked up once, from the game thread).
++fn game_hwnd() -> isize {
++    unsafe extern "system" fn first_visible(hwnd: isize, _: isize) -> i32 {
++        if unsafe { IsWindowVisible(hwnd) } != 0 {
++            GAME_HWND.store(hwnd, Ordering::Relaxed);
++            return 0;
++        }
++        1
++    }
++    if GAME_HWND.load(Ordering::Relaxed) == 0 {
++        unsafe { EnumThreadWindows(GetCurrentThreadId(), first_visible, 0) };
++    }
++    GAME_HWND.load(Ordering::Relaxed)
++}
++
++/// This player's mouse over the map, in world units.
++fn local_cursor_world() -> Option<[i32; 3]> {
++    let (px, py) = match *TEST_CURSOR.lock().unwrap() {
++        Some(p) => p,
++        None => {
++            let hwnd = game_hwnd();
++            let mut p = [0i32; 2];
++            if hwnd == 0 || unsafe { GetCursorPos(&mut p) } == 0 || unsafe { ScreenToClient(hwnd, &mut p) } == 0 {
++                return None;
++            }
++            (p[0], p[1])
++        }
++    };
++    screen_to_world(px, py)
++}
++
++/// `GXVideoManager::flip` (0x4013bf) presents the back buffer (`videomgr+0x20`, an
++/// `IDirectDrawSurface`): `Flip` in fullscreen, `Blt` to the primary in windowed mode. Drawing the
++/// other player's cursor on the back buffer right before that puts it on top of the finished frame.
++#[detour_mod]
++mod cursor_detours {
++    use openzt_detour::generated::gxvideomanager::FLIP;
++
++    #[detour(FLIP)]
++    unsafe extern "fastcall" fn flip(videomgr: *const i32) -> bool {
++        super::draw_remote_cursor(videomgr);
++        unsafe { FLIP_DETOUR.call(videomgr) }
++    }
++}
++
++fn draw_remote_cursor(videomgr: *const i32) {
++    // try_lock: never block the render path on the session.
++    let Some(world) = SESSION.try_lock().ok().and_then(|g| g.as_ref().and_then(|s| s.remote_cursor)) else { return };
++    let Some((x, y)) = world_to_screen(world) else { return };
++    let surface = unsafe { *((videomgr as u32 + 0x20) as *const *const usize) };
++    if surface.is_null() {
++        return;
++    }
++    // IDirectDrawSurface vtable: GetDC at slot 17 (0x44), ReleaseDC at slot 26 (0x68).
++    let vtbl = unsafe { *surface as *const usize };
++    let get_dc: unsafe extern "system" fn(*const usize, *mut isize) -> i32 = unsafe { std::mem::transmute(*vtbl.add(17)) };
++    let release_dc: unsafe extern "system" fn(*const usize, isize) -> i32 = unsafe { std::mem::transmute(*vtbl.add(26)) };
++    let mut hdc = 0isize;
++    if unsafe { get_dc(surface, &mut hdc) } < 0 || hdc == 0 {
++        return;
++    }
++    const COLOR: u32 = 0x00_00_ff_ff; // COLORREF 0x00BBGGRR: yellow
++    unsafe {
++        let pen = CreatePen(0, 2, COLOR);
++        let old_pen = SelectObject(hdc, pen);
++        let old_brush = SelectObject(hdc, GetStockObject(5)); // NULL_BRUSH
++        Ellipse(hdc, x - 9, y - 9, x + 10, y + 10);
++        MoveToEx(hdc, x - 14, y, std::ptr::null_mut());
++        LineTo(hdc, x + 15, y);
++        MoveToEx(hdc, x, y - 14, std::ptr::null_mut());
++        LineTo(hdc, x, y + 15);
++        SetBkMode(hdc, 1); // TRANSPARENT
++        SetTextColor(hdc, COLOR);
++        let label = if IS_CLIENT.load(Ordering::Relaxed) { "Host" } else { "Player 2" };
++        TextOutA(hdc, x + 12, y - 22, label.as_ptr(), label.len() as i32);
++        SelectObject(hdc, old_brush);
++        SelectObject(hdc, old_pen);
++        DeleteObject(pen);
++        release_dc(surface, hdc);
++    }
++    CURSORS_DRAWN.fetch_add(1, Ordering::Relaxed);
++}
++
+ // --- save / load ------------------------------------------------------------------------------
+ 
+ /// Path the next `SAVE_GAME` writes to instead of asking the player (see [`save_detours`]).
+@@ -866,6 +1101,9 @@ pub fn init() {
+     if let Err(e) = unsafe { save_detours::init_detours() } {
+         error!("coop: failed to install save detour: {e:?}");
+     }
++    if let Err(e) = unsafe { cursor_detours::init_detours() } {
++        error!("coop: failed to install cursor detour: {e:?}");
++    }
+ 
+     lua_fn!("coop_host", "ZooTogether: host a co-op session", "coop_host([port])", |port: Option<u16>| {
+         Ok(lua_result(host(port.unwrap_or(DEFAULT_PORT))))
+@@ -908,6 +1146,13 @@ pub fn init() {
+         g.coop_set_date_bytes(shifted);
+         Ok(date_string())
+     });
++    lua_fn!("coop_test_cursor", "ZooTogether lab: fake mouse at client pixel (x, y); negative x = real mouse", "coop_test_cursor(x, y)", |x: i32, y: i32| {
++        *TEST_CURSOR.lock().unwrap() = (x >= 0).then_some((x, y));
++        Ok(fmt_vec(local_cursor_world()))
++    });
++    lua_fn!("coop_world_to_screen", "ZooTogether lab: world position to client pixel", "coop_world_to_screen(x, y, z)", |x: i32, y: i32, z: i32| {
++        Ok(world_to_screen([x, y, z]).map(|(a, b)| format!("{a},{b}")).unwrap_or_else(|| "none".into()))
++    });
+     lua_fn!("coop_load_zoo", "ZooTogether: load a .zoo save or map file and enter the game", "coop_load_zoo(path)", |path: String| {
+         Ok(lua_result(load_zoo(&path)))
+     });
+@@ -958,6 +1203,8 @@ mod tests {
+         round_trip(Msg::Pause { seq: 4, paused: false });
+         round_trip(Msg::ZooChunk { offset: 32, total: 40, data: vec![9; 8] });
+         round_trip(Msg::ZooLoaded { ok: true });
++        round_trip(Msg::Cursor(Some([1024, -64, 32])));
++        round_trip(Msg::Cursor(None));
+         round_trip(Msg::Keepalive);
+     }
+ 
 -- 
 2.56.0.windows.3
 
