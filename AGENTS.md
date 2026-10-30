@@ -44,7 +44,8 @@ They favour caution over speed; for trivial changes, use judgement.
   LuaJIT traps). Unit tests: `cargo test --manifest-path openzt/Cargo.toml --lib
   --target=i686-pc-windows-msvc --features coop coop::` inside the same environment.
 - Lab: `scripts\setup-lab.ps1`, copy the new DLL to `private\lab-*\res-openzt.dll`, then
-  `python scripts\lab_coop.py` plus each `--mutant`. One lab at a time across all sessions on this PC.
+  `python scripts\lab_all.py` (normal runs plus every mutant, summary table in `private\lab-results`).
+  A new synced feature gets a `lab_coop.py` check and a mutant in `EXPECTED_FAIL`. One lab at a time across all sessions on this PC.
   Copies run parked off-screen at below-normal priority; **never minimize them** (Zoo Tycoon's loop
   stops when minimized).
 - Commit locally. Push to multiplayereverything/zoo-tycoon-coop or publish releases only when the user
