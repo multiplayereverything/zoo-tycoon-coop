@@ -1,8 +1,9 @@
 # ZooTogether — Zoo Tycoon (2001) co-op: plan and hand-off
 
-Status: **join-in-progress, budget, date, pause, player cursors, and building / selling objects work
-in a two-copy lab** (see "Lab"), version 0.4.0-dev (protocol 5). Animals, staff, guests, exhibits and
-research are not synced yet.
+Status: **join-in-progress, budget, date, pause, player cursors, building / selling objects, hiring
+staff and the admission price work in a two-copy lab** (see "Lab"), version 0.5.0-dev (protocol 6).
+Animals (they need exhibits, i.e. drag-built fences), firing staff, guests, research and awards are not
+synced yet.
 How to work on this repo: [AGENTS.md](AGENTS.md) (Karpathy guidelines + project rules). Repo: https://github.com/multiplayereverything/zoo-tycoon-coop (no
 release yet). Built on [openzt](https://github.com/openzt1/openzt) (by the openzt authors; LICENSE file
 GPL-3.0, Cargo metadata MIT/Apache-2.0, so this repo is GPL-3.0), a Rust DLL that the game loads as
@@ -19,7 +20,7 @@ Zoo Tycoon\ZooTogether\          this repo (the game never scans it)
   scripts\setup-lab.ps1          makes private\lab-host + private\lab-client (hardlinked copies)
   scripts\zt_launch.py           starts a copy suspended, lifts the one-instance check, parks it
                                  off-screen, captures its window (PrintWindow, needs Pillow)
-  scripts\lab_coop.py            the two-copy co-op lab, 18 checks (+ 6 mutants)
+  scripts\lab_coop.py            the two-copy co-op lab, 21 checks (+ 7 mutants)
   scripts\lab_all.py             runs lab_coop normally and once per mutant, writes a summary table
   scripts\get-openzt.ps1         clones openzt at df01b96 and applies the patch into vendor\openzt
   patches\openzt-zoo-together.patch   our changes to openzt, as patches on upstream df01b96
@@ -101,8 +102,16 @@ Phases:
    `videomgr+0x20` (`IDirectDrawSurface`; `GetDC` slot 17, `ReleaseDC` slot 26); windowed mode Blts it
    to the primary, fullscreen Flips. The local mouse comes from `GetCursorPos` + `ScreenToClient` on the
    game thread's window.
-5. **Building and selling** (done): see "Building sync".
-6. Animals/staff/guests positions (interest-managed, low rate), exhibits, research, awards. Until then
+5. **Building and selling** (done): see "Building sync". Hiring staff is the same placement (the
+   Staff menu puts a keeper on the cursor and the map click places it), so it replicates too; the hired
+   keeper then walks on its own on each copy.
+6. **Admission price** (done): `ZooStatus` is at `ZTGameMgr+0x10`, the adult price is the f32 at
+   `+0x1150`. The price panel calls `ZooStatus::setAdultAdmissionPrice` (0x4bbf10; callers 0x616e78,
+   0x616ea7, 0x616ff2 look like the panel's buttons, not clicked in the lab), which openzt's
+   `zoostatus.rs` detours; it now reports to coop. The host's price rides in every `State`; a client
+   change goes to the host as `Admission(price)`, and the client keeps its value until a `State` shows
+   it (2 s at most).
+7. Animals (needs fence/exhibit sync first), animal/staff positions, guests (interest-managed, low rate), exhibits, research, awards. Until then
    each copy simulates guests and animals on its own from the join snapshot on.
 
 ## Networking
@@ -111,10 +120,10 @@ Phases:
   client: `coop_join("ip[:port]")`, or set `ZT_COOP_HOST=<port>` / `ZT_COOP_JOIN=<ip[:port]>` before
   launching. Over the internet the host must forward TCP 27150, or both use a VPN (Tailscale/ZeroTier).
 - Next: global mod relay (tunnel mode) so friends can join by room code without port forwarding.
-- Frames: `u32 len | u8 type | payload` (max 64 KB), protocol 5: Hello{protocol,role},
-  State{seq,cash,acked_spend,acked_pause,paused,date[16]}, Spend{seq,amount}, Pause{seq,paused},
-  ZooChunk{offset,total,data}, ZooLoaded{ok}, Cursor{visible,x,y,z},
-  Placed/Removed{x,y,z,rotation,zt_type,zt_sub_type}, Keepalive (writer thread, 1 s; read timeout 30 s, per
+- Frames: `u32 len | u8 type | payload` (max 64 KB), protocol 6: Hello{protocol,role},
+  State{seq,cash,acked_spend,acked_pause,paused,date[16],admission}, Spend{seq,amount},
+  Pause{seq,paused}, ZooChunk{offset,total,data}, ZooLoaded{ok}, Cursor{visible,x,y,z},
+  Placed/Removed{x,y,z,rotation,zt_type,zt_sub_type}, Admission{price}, Keepalive (writer thread, 1 s; read timeout 30 s, per
   Baldi's link-health lesson). A protocol mismatch shows in `coop_status()` and nothing is applied.
 
 ## Building sync (protocol 4-5, 2026-10-30)
@@ -180,7 +189,8 @@ it). The script handles both. Output: `vendor\openzt\target\i686-pc-windows-msvc
 ## Lab
 
 - `scripts\setup-lab.ps1`, then `python scripts\lab_all.py` runs everything (normal runs plus each
-  mutant: `nojoin`, `drop_spend`, `no_date`, `no_cursor`, `no_place`, `no_remove`) one copy pair at a
+  mutant: `nojoin`, `drop_spend`, `no_date`, `no_cursor`, `no_place`, `no_remove`, `no_admission`)
+  one copy pair at a
   time and writes `private\lab-results\<time>-summary.md`. `python scripts\lab_coop.py [--mutant X]
   [--shots] [--keep]` runs one. Window captures and `build_drawn` need Pillow in `private\pylib`
   (`pip install --target private\pylib pillow`). Copies run
@@ -199,7 +209,19 @@ it). The script handles both. Output: `vendor\openzt\target\i686-pc-windows-msvc
   turns it on) did not work with posted clicks; it seems to pick the object under the *real* mouse,
   not checked. The lab sells through the game's sell path from Lua instead (`coop_test_sell`).
 
-### Results, protocol 5 (2026-10-30 06:51-07:01, private\lab-results\*-summary.md)
+### Results, protocol 6 (2026-10-30, private\lab-results\*-summary.md)
+
+New checks: `hire_c2h` (the client hires a zookeeper with posted clicks: Staff button (25,170), map
+(500,150); the host places the same `keeper/m` with no error; a host capture shows the keeper) and
+`admission_c2h`/`admission_h2c` (client sets 37 through the setter, both copies show 37.00; host sets
+62, both show 62.00).
+
+The protocol-5 DLL with `hire_c2h` passed the full suite at 07:06-07:15 (two normal runs 19/19, all six
+mutants caught, `no_place` also fails `hire_c2h` as expected). The protocol-6 DLL: normal 07:16 21/21,
+`no_admission` 07:17 caught (only `admission_c2h` fails); see the latest summary file for the full
+suite run after that.
+
+### Results, protocol 5 (2026-10-30 06:51-07:01)
 
 New checks: the client buys a snack machine with posted clicks and the host builds it, with both
 `coop_layout` hashes equal (`build_c2h`); the host's screen changes where it was built (`build_drawn`,
@@ -283,6 +305,11 @@ stole the reply meant for the next command. Each request now has its own reply c
   undo, and **moving** an object (picking it up and dropping it goes through `placeEntityOnMap` but not
   through `removeEntityFromMap`, so the other copy probably gets a second one instead of a move).
 - Two players building on the same tile at the same moment are not reconciled (no host validation).
+- Animals can't be bought outside an exhibit ("Animals can only be placed in exhibits"), and exhibits
+  need drag-built fences, which are not tested; so animal adoption is not synced or tested. Firing staff
+  is not synced (staff aren't in the removal set). Hired staff and animals walk independently on
+  each copy.
+- The admission price is changed in the lab through the setter, not by clicking the price panel.
 - Cursors are only tested with the lab's faked position, never a real mouse, and with both copies
   looking at the same spot (same camera after join); a different camera/zoom/rotation on the two sides
   is untested. The cursor is a world point at ground level (z=0), so on raised terrain it can sit a few

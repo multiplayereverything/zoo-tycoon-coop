@@ -1,7 +1,7 @@
 From beed50b7f5098f3cbb80e31447184686bcd50973 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 01:22:29 +0200
-Subject: [PATCH 1/5] ZooTogether: host-authoritative shared budget over TCP
+Subject: [PATCH 1/6] ZooTogether: host-authoritative shared budget over TCP
  (coop feature)
 
 - coop.rs: session, framed wire protocol, client/host spend ledgers, Lua commands
@@ -830,7 +830,7 @@ index b81a048..260db83 100644
 From e8c69374d76e8860a39f03cf99191bf42b78d805 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 03:31:53 +0200
-Subject: [PATCH 2/5] ZooTogether protocol 2: join-in-progress zoo transfer,
+Subject: [PATCH 2/6] ZooTogether protocol 2: join-in-progress zoo transfer,
  date and pause sync
 
 - Host saves its zoo through SAVE_GAME (save dialog detoured to a fixed path) and streams it in
@@ -1833,7 +1833,7 @@ index 1ec6ce8..909a1f4 100644
 From 0451b17ae2cc9fd5a5004d7f9081254fde9ddfc8 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 05:16:29 +0200
-Subject: [PATCH 3/5] ZooTogether protocol 3: player cursors
+Subject: [PATCH 3/6] ZooTogether protocol 3: player cursors
 
 - Cursor message (world position, 10 Hz max, on change) both ways
 - Screen<->world via ZTMapView/BFMap camera origin and virtualToWorld/worldToVirtual
@@ -2226,7 +2226,7 @@ index c52bee2..5fc2ef0 100644
 From c79f2687e6163315b58e09882bc8d7a353ad8420 Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 06:31:20 +0200
-Subject: [PATCH 4/5] ZooTogether protocol 4: building sync (placements both
+Subject: [PATCH 4/6] ZooTogether protocol 4: building sync (placements both
  ways)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -2541,7 +2541,7 @@ index 909a1f4..340a2d5 100644
 From 4ca25cb39daa9728012c4a5adf0e22fadf19624b Mon Sep 17 00:00:00 2001
 From: multiplayereverything <multiplayereverythingofficial@gmail.com>
 Date: Fri, 30 Oct 2026 07:01:23 +0200
-Subject: [PATCH 5/5] ZooTogether protocol 5: removal sync; re-entrancy-safe
+Subject: [PATCH 5/6] ZooTogether protocol 5: removal sync; re-entrancy-safe
  console and coop tick
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -2911,6 +2911,262 @@ index 340a2d5..ad6935b 100644
  /// ZooTogether co-op: every loaded entity type pointer.
  #[cfg(feature = "coop")]
  pub(crate) fn coop_entity_types() -> Vec<u32> {
+-- 
+2.56.0.windows.3
+
+
+From dcf6482a19e874e32e6b1be3f9d8552db4f096c7 Mon Sep 17 00:00:00 2001
+From: multiplayereverything <multiplayereverythingofficial@gmail.com>
+Date: Fri, 30 Oct 2026 07:18:28 +0200
+Subject: [PATCH 6/6] ZooTogether protocol 6: admission price sync
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ openzt/src/coop.rs      | 88 +++++++++++++++++++++++++++++++++++++++--
+ openzt/src/zoostatus.rs |  5 ++-
+ 2 files changed, 89 insertions(+), 4 deletions(-)
+
+diff --git a/openzt/src/coop.rs b/openzt/src/coop.rs
+index cbbfbe6..b9b25be 100644
+--- a/openzt/src/coop.rs
++++ b/openzt/src/coop.rs
+@@ -36,7 +36,7 @@ use tracing::{error, info, warn};
+ 
+ use crate::{globals::globals, lua_fn};
+ 
+-pub const PROTOCOL_VERSION: u16 = 5;
++pub const PROTOCOL_VERSION: u16 = 6;
+ pub const DEFAULT_PORT: u16 = 27150;
+ const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(200);
+ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
+@@ -65,6 +65,8 @@ pub enum Msg {
+     Placed(Placement),
+     /// An object was removed (sold, bulldozed) on the sender's copy.
+     Removed(Placement),
++    /// Client -> host: the client's player set the adult admission price.
++    Admission(f32),
+     Keepalive,
+ }
+ 
+@@ -86,6 +88,7 @@ pub struct WorldState {
+     pub acked_pause: u32,
+     pub paused: bool,
+     pub date: [u8; 16],
++    pub admission: f32,
+ }
+ 
+ const T_HELLO: u8 = 1;
+@@ -98,6 +101,7 @@ const T_ZOO_LOADED: u8 = 7;
+ const T_CURSOR: u8 = 8;
+ const T_PLACED: u8 = 9;
+ const T_REMOVED: u8 = 10;
++const T_ADMISSION: u8 = 11;
+ 
+ pub const ROLE_HOST: u8 = 1;
+ pub const ROLE_CLIENT: u8 = 2;
+@@ -119,6 +123,11 @@ impl Msg {
+                 b.extend_from_slice(&s.acked_pause.to_le_bytes());
+                 b.push(s.paused as u8);
+                 b.extend_from_slice(&s.date);
++                b.extend_from_slice(&s.admission.to_le_bytes());
++            }
++            Msg::Admission(price) => {
++                b.push(T_ADMISSION);
++                b.extend_from_slice(&price.to_le_bytes());
+             }
+             Msg::Spend { seq, amount } => {
+                 b.push(T_SPEND);
+@@ -175,13 +184,15 @@ impl Msg {
+         let bool_at = |i: usize| p.get(i).and_then(|&v| if v <= 1 { Some(v == 1) } else { None });
+         match t {
+             T_HELLO if p.len() == 3 => Some(Msg::Hello { protocol: u16_at(0)?, role: p[2] }),
+-            T_STATE if p.len() == 33 => Some(Msg::State(WorldState {
++            T_ADMISSION if p.len() == 4 => Some(Msg::Admission(f32_at(0)?)),
++            T_STATE if p.len() == 37 => Some(Msg::State(WorldState {
+                 seq: u32_at(0)?,
+                 cash: f32_at(4)?,
+                 acked_spend: u32_at(8)?,
+                 acked_pause: u32_at(12)?,
+                 paused: bool_at(16)?,
+                 date: p[17..33].try_into().ok()?,
++                admission: f32_at(33)?,
+             })),
+             T_SPEND if p.len() == 8 => Some(Msg::Spend { seq: u32_at(0)?, amount: f32_at(4)? }),
+             T_PAUSE if p.len() == 5 => Some(Msg::Pause { seq: u32_at(0)?, paused: bool_at(4)? }),
+@@ -445,6 +456,8 @@ struct Session {
+     zoo: ZooAssembly,
+     /// The other player's cursor (world units), drawn by the `FLIP` detour.
+     remote_cursor: Option<[i32; 3]>,
++    /// Client: an admission price this player set that the host hasn't confirmed yet, and when.
++    admission_pending: Option<(f32, Instant)>,
+     last_cursor_sent: Option<[i32; 3]>,
+     last_cursor_time: Instant,
+     stats: Stats,
+@@ -464,6 +477,8 @@ struct Stats {
+     places_applied: u32,
+     removes_sent: u32,
+     removes_applied: u32,
++    admissions_sent: u32,
++    admissions_applied: u32,
+     last_host_cash: f32,
+     last_error: String,
+ }
+@@ -487,6 +502,7 @@ impl Session {
+             world_ready: false,
+             zoo: ZooAssembly::default(),
+             remote_cursor: None,
++            admission_pending: None,
+             last_cursor_sent: None,
+             last_cursor_time: Instant::now(),
+             stats: Stats::default(),
+@@ -579,7 +595,7 @@ fn status() -> String {
+     with_session(|s| {
+         let cash = game_cash().map(|c| format!("{c:.2}")).unwrap_or_else(|| "none".into());
+         format!(
+-            "role={:?} connected={} world_ready={} in_game={} paused={} date={} cash={} host_cash={:.2} snapshots_sent={} snapshots_applied={} spends_sent={} spends_applied={} pauses_sent={} pauses_applied={} zoo_bytes={} pending={} local_cursor={} remote_cursor={} remote_screen={} cursors_sent={} cursors_drawn={} places_sent={} places_applied={} last_placed={} removes_sent={} removes_applied={} last_removed={} last_error={}",
++            "role={:?} connected={} world_ready={} in_game={} paused={} date={} cash={} host_cash={:.2} snapshots_sent={} snapshots_applied={} spends_sent={} spends_applied={} pauses_sent={} pauses_applied={} zoo_bytes={} pending={} local_cursor={} remote_cursor={} remote_screen={} cursors_sent={} cursors_drawn={} places_sent={} places_applied={} last_placed={} removes_sent={} removes_applied={} last_removed={} admission={} admissions_sent={} admissions_applied={} last_error={}",
+             s.role,
+             s.peer_ok,
+             s.world_ready,
+@@ -607,6 +623,9 @@ fn status() -> String {
+             s.stats.removes_sent,
+             s.stats.removes_applied,
+             LAST_REMOVED.lock().unwrap().as_ref().map(fmt_placement).unwrap_or_else(|| "none".into()),
++            admission().map(|a| format!("{a:.2}")).unwrap_or_else(|| "none".into()),
++            s.stats.admissions_sent,
++            s.stats.admissions_applied,
+             if s.stats.last_error.is_empty() { "-" } else { &s.stats.last_error }
+         )
+     })
+@@ -762,6 +781,10 @@ pub fn tick() {
+                     }
+                 }
+             }
++            NetEvent::Msg(Msg::Admission(price)) if s.role == Role::Host => {
++                set_admission(price);
++                s.stats.admissions_applied += 1;
++            }
+             NetEvent::Msg(Msg::Removed(pl)) => {
+                 if s.role == Role::Host || s.world_ready {
+                     match remove_entity(&pl) {
+@@ -803,6 +826,14 @@ pub fn tick() {
+                 if let PauseAction::Apply(p) = s.pause.on_host(st.paused, st.acked_pause, game_paused()) {
+                     set_game_paused(p);
+                 }
++                // Keep this player's own change until the host shows it (or 2 s pass: the host's own
++                // change won).
++                if s.admission_pending.is_some_and(|(p, t)| p == st.admission || t.elapsed() > Duration::from_secs(2)) {
++                    s.admission_pending = None;
++                }
++                if s.admission_pending.is_none() && admission() != Some(st.admission) {
++                    set_admission(st.admission);
++                }
+                 s.stats.last_host_cash = st.cash;
+                 s.stats.snapshots_applied += 1;
+             }
+@@ -821,6 +852,15 @@ pub fn tick() {
+             s.stats.places_sent += 1;
+         }
+     }
++    if let Some(price) = LOCAL_ADMISSION.lock().unwrap().take()
++        && s.role == Role::Client
++        && ready
++        && !mutant("no_admission")
++        && s.send(Msg::Admission(price))
++    {
++        s.admission_pending = Some((price, Instant::now()));
++        s.stats.admissions_sent += 1;
++    }
+     let removed: Vec<Placement> = PENDING_REMOVED.lock().unwrap().drain(..).collect();
+     for pl in removed {
+         if ready && !mutant("no_remove") && s.send(Msg::Removed(pl)) {
+@@ -889,6 +929,7 @@ fn host_tick(s: &mut Session) {
+             acked_pause: s.host_pause.last_applied,
+             paused: game_paused(),
+             date: g.coop_date_bytes(),
++            admission: admission().unwrap_or_default(),
+         };
+         if s.send(Msg::State(st)) {
+             s.stats.snapshots_sent += 1;
+@@ -1088,6 +1129,35 @@ fn draw_remote_cursor(videomgr: *const i32) {
+     CURSORS_DRAWN.fetch_add(1, Ordering::Relaxed);
+ }
+ 
++// --- admission price --------------------------------------------------------------------------
++//
++// `ZooStatus` sits at `ZTGameMgr+0x10`; its adult admission price is the f32 at `+0x1150`. The price
++// panel sets it through `ZooStatus::setAdultAdmissionPrice` (0x4bbf10), which openzt's `zoostatus.rs`
++// detours and which reports to [`on_admission_set`]. The host's price rides in every `State`.
++
++/// Last price this player set, for [`tick`] to send (game thread).
++static LOCAL_ADMISSION: Mutex<Option<f32>> = Mutex::new(None);
++
++pub fn on_admission_set(price: f32) {
++    *LOCAL_ADMISSION.lock().unwrap() = Some(price);
++}
++
++fn admission_ptr() -> Option<*mut f32> {
++    let gm = globals().ztgamemgr_ptr();
++    (!gm.is_null()).then(|| (gm as u32 + 0x10 + 0x1150) as *mut f32)
++}
++
++fn admission() -> Option<f32> {
++    admission_ptr().map(|p| unsafe { *p })
++}
++
++/// Writes the price directly (not through the setter, so it isn't reported back).
++fn set_admission(price: f32) {
++    if let Some(p) = admission_ptr() {
++        unsafe { *p = price };
++    }
++}
++
+ // --- building -------------------------------------------------------------------------------
+ //
+ // A purchase: the buy menu puts a freshly created entity on the cursor (`ZTMapView::setTempEntity`)
+@@ -1440,6 +1510,16 @@ pub fn init() {
+             }
+             Ok(lua_result(Ok(format!("sold {entity:#x}"))))
+         });
++    lua_fn!("coop_test_admission", "ZooTogether lab: set the adult admission price like the price panel does",
++        "coop_test_admission(price)", |price: f32| {
++            use openzt_detour::generated::zoostatus::SET_ADULT_ADMISSION_PRICE;
++            let gm = globals().ztgamemgr_ptr();
++            if gm.is_null() {
++                return Ok(lua_result(Err("no game".into())));
++            }
++            unsafe { SET_ADULT_ADMISSION_PRICE.hooked()((gm as u32 + 0x10) as *const u32, price) };
++            Ok(lua_result(Ok(format!("admission {:.2}", admission().unwrap_or_default()))))
++        });
+     lua_fn!("coop_place", "ZooTogether: build type/subtype at world x, y, z with rotation", "coop_place(type, subtype, x, y, z, rot)",
+         |t: String, sub: String, x: i32, y: i32, z: i32, rot: i32| {
+             let pl = Placement { zt_type: t, zt_sub_type: sub, pos: [x, y, z], rotation: rot };
+@@ -1490,7 +1570,9 @@ mod tests {
+             acked_pause: 2,
+             paused: true,
+             date: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
++            admission: 42.5,
+         }));
++        round_trip(Msg::Admission(17.0));
+         round_trip(Msg::Spend { seq: 9, amount: 250.0 });
+         round_trip(Msg::Pause { seq: 4, paused: false });
+         round_trip(Msg::ZooChunk { offset: 32, total: 40, data: vec![9; 8] });
+diff --git a/openzt/src/zoostatus.rs b/openzt/src/zoostatus.rs
+index b3fac1a..546ae16 100644
+--- a/openzt/src/zoostatus.rs
++++ b/openzt/src/zoostatus.rs
+@@ -3029,7 +3029,10 @@ mod zoostatus_detours {
+ 
+     #[detour(SET_ADULT_ADMISSION_PRICE)]
+     unsafe extern "thiscall" fn set_adult_admission_price(this: *const u32, price: f32) {
+-        unsafe { mut_from_memory::<ZooStatus>(this) }.set_adult_admission_price(price);
++        let status = unsafe { mut_from_memory::<ZooStatus>(this) };
++        status.set_adult_admission_price(price);
++        #[cfg(feature = "coop")]
++        crate::coop::on_admission_set(status.admission_price);
+     }
+ 
+     /// `ZooStatus_showPrices.asm` (read in full) never touches the incoming `this`/ECX past its
 -- 
 2.56.0.windows.3
 

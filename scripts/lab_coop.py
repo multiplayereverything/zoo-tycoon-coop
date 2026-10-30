@@ -26,6 +26,8 @@ Checks, in order:
   remove_h2c     the host sells its snack machine; the client removes it; both are back to the map's
                  original layout
   hire_c2h       the client hires a zookeeper with real clicks; the host adds the same keeper
+  admission_c2h  the client sets the admission price (through the price panel's setter); the host takes it
+  admission_h2c  the host sets it; the client follows
 
 --mutant nojoin      client never joins          -> zoo_transfer..client_spend must FAIL
 --mutant drop_spend  host ignores client spends  -> client_spend must FAIL, the rest pass
@@ -34,6 +36,7 @@ Checks, in order:
 --mutant no_place    client never sends its builds -> build_c2h, build_drawn (and so remove_c2h) must FAIL
 --mutant no_remove   client never sends its removals -> remove_c2h must FAIL
                      (no_place also stops the client's hire, so hire_c2h fails under it too)
+--mutant no_admission  client never sends its price -> admission_c2h must FAIL
 
 build_drawn needs Pillow; the lab looks for it in private/pylib (pip install --target private/pylib pillow).
 
@@ -63,18 +66,21 @@ MAP = "maps\\default.zoo"
 
 ALL_CHECKS = ["zoo_transfer", "layout", "cash_join", "host_change", "client_spend", "no_double", "date",
               "host_pause", "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
-              "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c", "hire_c2h"]
+              "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c", "hire_c2h",
+              "admission_c2h", "admission_h2c"]
 CURSOR_CHECKS = {"cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn"}
 EXPECTED_FAIL = {
     None: set(),
     "nojoin": {"zoo_transfer", "layout", "cash_join", "host_change", "client_spend", "date", "host_pause",
                "client_pause", "cursor_c2h", "cursor_h2c", "cursor_projection", "cursor_drawn",
-               "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c", "hire_c2h"},
+               "build_c2h", "build_drawn", "build_h2c", "remove_c2h", "remove_h2c", "hire_c2h",
+               "admission_c2h", "admission_h2c"},
     "drop_spend": {"client_spend"},
     "no_date": {"date"},
     "no_cursor": {"cursor_c2h", "cursor_drawn"},
     "no_place": {"build_c2h", "build_drawn", "remove_c2h", "hire_c2h"},  # the host never had the client's build to remove
     "no_remove": {"remove_c2h"},
+    "no_admission": {"admission_c2h"},
 }
 # Buy menu: the Buildings button, then a free grass pixel; the first item (Snack Machine) is selected.
 BUILDINGS_BUTTON = (25, 125)
@@ -146,7 +152,7 @@ def run(args, results):
     pids = results["pids"]
     base_env = {"OPENZT_NO_CONSOLE": "1"}
     client_env = dict(base_env)
-    if args.mutant in ("no_date", "no_cursor", "no_place", "no_remove"):
+    if args.mutant in ("no_date", "no_cursor", "no_place", "no_remove", "no_admission"):
         client_env["ZT_COOP_MUTANT"] = args.mutant
     host_env = dict(base_env)
     if args.mutant == "drop_spend":
@@ -333,13 +339,27 @@ def run(args, results):
     checks["hire_c2h"] = bool(hired.startswith("keeper/") and got and host_error == "-")
     results["hire"] = {"client_placed": hired, "host_last_error": host_error}
 
+    # Admission price, both ways.
+    def admission(addr):
+        return status(addr).get("admission")
+
+    lua(CLIENT_CONSOLE, "return coop_test_admission(37)")
+    checks["admission_c2h"] = bool(wait_until(lambda: admission(HOST_CONSOLE) == "37.00", 3)
+                                   and admission(CLIENT_CONSOLE) == "37.00")
+    a_host_1, a_client_1 = admission(HOST_CONSOLE), admission(CLIENT_CONSOLE)
+    time.sleep(2.5)  # past the client's 2 s hold, so a failed send can't keep the client at 37
+    lua(HOST_CONSOLE, "return coop_test_admission(62)")
+    checks["admission_h2c"] = bool(wait_until(lambda: admission(CLIENT_CONSOLE) == "62.00", 3))
+    results["admission"] = {"after_client_set": [a_host_1, a_client_1],
+                            "after_host_set": [admission(HOST_CONSOLE), admission(CLIENT_CONSOLE)]}
+
     results["status"] = {"host": lua(HOST_CONSOLE, "return coop_status()"),
                          "client": lua(CLIENT_CONSOLE, "return coop_status()")}
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mutant", choices=["nojoin", "drop_spend", "no_date", "no_cursor", "no_place", "no_remove"], default=None)
+    ap.add_argument("--mutant", choices=["nojoin", "drop_spend", "no_date", "no_cursor", "no_place", "no_remove", "no_admission"], default=None)
     ap.add_argument("--keep", action="store_true", help="leave the copies running")
     ap.add_argument("--shots", action="store_true", help="save window captures (needs Pillow)")
     args = ap.parse_args()
