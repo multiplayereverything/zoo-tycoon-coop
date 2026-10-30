@@ -53,7 +53,9 @@ both ways, and each player's cursor must reach and be drawn on the other side (p
 
 ## Credits and license
 
-- [openzt](https://github.com/openzt1/openzt) by the openzt contributors. Its repo ships a GPL-3.0
+- [openzt](https://github.com/openzt1/openzt) by the openzt contributors, Finn Hartshorn
+  ([finnhartshorn](https://github.com/finnhartshorn)) and Eric Galvan
+  ([GoosiferIO](https://github.com/GoosiferIO)); see [CREDITS.md](CREDITS.md). Its repo ships a GPL-3.0
   `LICENSE` file (its Cargo metadata and README say MIT / Apache-2.0); to respect all of them this
   repo, including our patch to openzt, is released under **GPL-3.0**, see [LICENSE](LICENSE).
 - Zoo Tycoon is a trademark of Microsoft. No game files are included; you need your own copy.
